@@ -1,4 +1,4 @@
-import os, io, json, copy, random, asyncio
+import os, io, json, copy, time, random, asyncio
 from datetime import timedelta
 from typing import Optional
 import discord
@@ -13,6 +13,12 @@ REVIEW_CHANNEL_ID = int(os.getenv("REVIEW_CHANNEL_ID"))
 CATEGORY_ID = int(os.getenv("TICKET_CATEGORY_ID", "0"))
 ESCALATE_ROLE_ID = int(os.getenv("ESCALATE_ROLE_ID", "0"))
 GUILD_ID = int(os.getenv("GUILD_ID", "0"))
+VOUCH_ROLE_ID = int(os.getenv("VOUCH_ROLE_ID", "0"))
+VOUCH_CHANNEL_ID = int(os.getenv("VOUCH_CHANNEL_ID", "0"))
+MOD_LOG_CHANNEL_ID = int(os.getenv("MOD_LOG_CHANNEL_ID", "0"))
+
+BUSINESS_NAME = "Frontline"
+VOUCH_COOLDOWN_SECONDS = 30
 
 intents = discord.Intents.default()
 
@@ -36,10 +42,11 @@ PAYMENT_METHODS = [
 PANEL_COLOR = 0xF1C40F  # gold bar on the left
 
 
-# ---------- Saved settings (website, image, on/off, warnings) ----------
+# ---------- Saved settings ----------
 DATA_FILE = "data.json"
 DEFAULTS = {"website": "https://example.com", "image": "",
-            "tickets_enabled": True, "warnings": {}}
+            "tickets_enabled": True, "warnings": {},
+            "vouch_count": 0, "vouch_sum": 0}
 
 
 def load_data():
@@ -66,12 +73,10 @@ class MyBot(commands.Bot):
         self.add_view(OpenView())    # keeps the panel dropdown working after restarts
         self.add_view(CloseView())
         if GUILD_ID:
-            # Instant sync to your server only
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
-            # clear old global copies so commands don't show up twice
-            self.tree.clear_commands(guild=None)
+            self.tree.clear_commands(guild=None)   # avoid duplicate global copies
             await self.tree.sync()
         else:
             synced = await self.tree.sync()
@@ -143,6 +148,28 @@ async def check_target(interaction, member):
     return False
 
 
+async def mod_log(guild, action, moderator, target, reason=None,
+                  color=discord.Color.orange()):
+    """Posts an embed to the mod log channel (if MOD_LOG_CHANNEL_ID is set)."""
+    if not MOD_LOG_CHANNEL_ID:
+        return
+    ch = guild.get_channel(MOD_LOG_CHANNEL_ID)
+    if not ch:
+        return
+    e = discord.Embed(title=action, color=color, timestamp=discord.utils.utcnow())
+    if hasattr(target, "id"):
+        e.add_field(name="Target", value=f"{target} (`{target.id}`)")
+    else:
+        e.add_field(name="Target", value=str(target))
+    e.add_field(name="Moderator", value=moderator.mention)
+    if reason:
+        e.add_field(name="Reason", value=reason[:1000], inline=False)
+    try:
+        await ch.send(embed=e)
+    except discord.HTTPException:
+        pass
+
+
 async def build_transcript(channel):
     lines = []
     async for m in channel.history(limit=None, oldest_first=True):
@@ -159,7 +186,7 @@ def transcript_file(text, name):
     return discord.File(io.BytesIO(text.encode("utf-8")), filename=f"{name}.txt")
 
 
-# ---------- Reviews ----------
+# ---------- Reviews (sent to the user's DMs after a ticket closes) ----------
 class ReviewModal(discord.ui.Modal, title="Leave a review"):
     comment = discord.ui.TextInput(
         label="Comments", style=discord.TextStyle.paragraph,
@@ -193,8 +220,90 @@ class ReviewView(discord.ui.View):
         await interaction.response.send_modal(ReviewModal(int(select.values[0])))
 
 
+# ---------- Vouches ----------
+last_vouch = {}
+STAR_COLORS = {5: 0x2ECC71, 4: 0x9BE564, 3: 0xF1C40F, 2: 0xE67E22, 1: 0xE74C3C}
+
+
+@bot.tree.command(name="vouch", description="Leave a vouch for the shop")
+@app_commands.describe(stars="Your rating", comment="How was your experience?",
+                       product="What you bought (optional)",
+                       proof="A screenshot (optional)")
+@app_commands.choices(stars=[
+    app_commands.Choice(name="⭐ 1 star", value=1),
+    app_commands.Choice(name="⭐⭐ 2 stars", value=2),
+    app_commands.Choice(name="⭐⭐⭐ 3 stars", value=3),
+    app_commands.Choice(name="⭐⭐⭐⭐ 4 stars", value=4),
+    app_commands.Choice(name="⭐⭐⭐⭐⭐ 5 stars", value=5),
+])
+async def vouch(interaction: discord.Interaction, stars: app_commands.Choice[int],
+                comment: app_commands.Range[str, 3, 500],
+                product: Optional[app_commands.Range[str, 1, 100]] = None,
+                proof: Optional[discord.Attachment] = None):
+    if not VOUCH_ROLE_ID:
+        return await interaction.response.send_message(
+            "Vouches aren't set up yet. An admin needs to add VOUCH_ROLE_ID to the .env file.",
+            ephemeral=True)
+    role = interaction.guild.get_role(VOUCH_ROLE_ID)
+    if role is None or role not in interaction.user.roles:
+        who = role.mention if role else "the customer role"
+        return await interaction.response.send_message(
+            f"You need {who} to leave a vouch.", ephemeral=True)
+
+    now = time.time()
+    wait = VOUCH_COOLDOWN_SECONDS - (now - last_vouch.get(interaction.user.id, 0))
+    if wait > 0:
+        return await interaction.response.send_message(
+            f"Slow down! Try again in {int(wait) + 1}s.", ephemeral=True)
+
+    await interaction.response.defer(ephemeral=True)
+
+    n = stars.value
+    number = data["vouch_count"] + 1
+    avatar = interaction.user.display_avatar.url
+    e = discord.Embed(title="✅ New Vouch", description=f">>> {comment}",
+                      color=STAR_COLORS[n], timestamp=discord.utils.utcnow())
+    e.set_author(name=interaction.user.display_name, icon_url=avatar)
+    e.set_thumbnail(url=avatar)
+    e.add_field(name="Rating", value=f"{'★' * n}{'☆' * (5 - n)}  **{n}/5**", inline=False)
+    if product:
+        e.add_field(name="Product", value=product)
+    e.add_field(name="Vouched by", value=interaction.user.mention)
+    e.set_footer(text=f"Vouch #{number} • {BUSINESS_NAME}")
+
+    file = None
+    if proof and proof.content_type and proof.content_type.startswith("image/"):
+        file = await proof.to_file()
+        e.set_image(url=f"attachment://{file.filename}")
+
+    ch = (bot.get_channel(VOUCH_CHANNEL_ID) or bot.get_channel(REVIEW_CHANNEL_ID)
+          or interaction.channel)
+    if file:
+        await ch.send(embed=e, file=file)
+    else:
+        await ch.send(embed=e)
+
+    last_vouch[interaction.user.id] = now
+    data["vouch_count"] = number
+    data["vouch_sum"] += n
+    save_data()
+    await interaction.followup.send(f"✅ Your vouch was posted in {ch.mention}. Thank you!",
+                                    ephemeral=True)
+
+
+@bot.tree.command(name="vouchstats", description="See the total vouches and average rating")
+async def vouchstats(interaction: discord.Interaction):
+    count = data["vouch_count"]
+    if not count:
+        return await interaction.response.send_message("No vouches yet.", ephemeral=True)
+    avg = data["vouch_sum"] / count
+    e = discord.Embed(title=f"📊 {BUSINESS_NAME} Vouches", color=discord.Color.green())
+    e.add_field(name="Total vouches", value=str(count))
+    e.add_field(name="Average rating", value=f"{avg:.2f} / 5 ⭐")
+    await interaction.response.send_message(embed=e)
+
+
 # ---------- Tickets ----------
-# key: (name shown inside the ticket, emoji)
 TICKET_TYPES = {
     "support":  ("Support", "⚙️"),
     "purchase": ("Purchase", "💰"),
@@ -206,7 +315,6 @@ TICKET_TYPES = {
 }
 
 # The dropdown menu. Order here = order in Discord. Delete a line to remove an option.
-# (key, label shown in the dropdown, emoji)
 DROPDOWN_OPTIONS = [
     ("support",  "Support",         "⚙️"),
     ("purchase", "Purchase Now",    "💰"),
@@ -416,6 +524,73 @@ async def escalate(interaction: discord.Interaction, reason: str = "No reason gi
         await channel.edit(name=f"escalated-{channel.name}"[:100])
 
 
+# ---------- Purge all tickets ----------
+class PurgeTicketsView(discord.ui.View):
+    def __init__(self, invoker, save_transcripts):
+        super().__init__(timeout=30)
+        self.invoker = invoker
+        self.save_transcripts = save_transcripts
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        if interaction.user.id != self.invoker.id:
+            await interaction.response.send_message("This isn't your confirmation.",
+                                                    ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Delete all tickets", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        tickets = [c for c in guild.text_channels if is_ticket(c)]
+        await interaction.response.edit_message(
+            content=f"🗑️ Deleting {len(tickets)} ticket(s)...", view=None)
+
+        log = bot.get_channel(LOG_CHANNEL_ID)
+        deleted = 0
+        for c in tickets:
+            try:
+                if self.save_transcripts and log:
+                    text = await build_transcript(c)
+                    await log.send(f"Transcript for **{c.name}** (purged)",
+                                   file=transcript_file(text, c.name))
+                await c.delete(reason=f"Ticket purge by {interaction.user}")
+                deleted += 1
+            except discord.HTTPException:
+                pass
+            await asyncio.sleep(1)  # stay under Discord rate limits
+
+        await mod_log(guild, "🗑️ Tickets purged", interaction.user,
+                      f"{deleted} ticket channel(s)", color=discord.Color.red())
+        try:
+            await interaction.edit_original_response(
+                content=f"✅ Deleted **{deleted}** of {len(tickets)} ticket(s).")
+        except discord.HTTPException:
+            pass
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="Cancelled.", view=None)
+        self.stop()
+
+
+@bot.tree.command(name="purgetickets", description="Delete ALL open ticket channels (admin)")
+@app_commands.describe(save_transcripts="Save a transcript of each ticket to the log channel first")
+@app_commands.checks.has_permissions(administrator=True)
+async def purgetickets(interaction: discord.Interaction, save_transcripts: bool = False):
+    if is_ticket(interaction.channel):
+        return await interaction.response.send_message(
+            "Run this in a normal channel, not inside a ticket.", ephemeral=True)
+    count = len([c for c in interaction.guild.text_channels if is_ticket(c)])
+    if count == 0:
+        return await interaction.response.send_message("There are no open tickets.",
+                                                       ephemeral=True)
+    note = " Transcripts will be saved first." if save_transcripts else " Transcripts will NOT be saved."
+    await interaction.response.send_message(
+        f"⚠️ This will permanently delete **{count}** ticket channel(s).{note}\nAre you sure?",
+        view=PurgeTicketsView(interaction.user, save_transcripts), ephemeral=True)
+
+
 # ---------- Website & image (changeable any time) ----------
 @bot.tree.command(name="website", description="Get our website link")
 async def website(interaction: discord.Interaction):
@@ -467,6 +642,7 @@ async def kick(interaction: discord.Interaction, member: discord.Member,
         return
     await member.kick(reason=f"{interaction.user}: {reason}")
     await interaction.response.send_message(f"👢 Kicked **{member}** — {reason}")
+    await mod_log(interaction.guild, "👢 Member kicked", interaction.user, member, reason)
 
 
 @bot.tree.command(name="ban", description="Ban a member")
@@ -477,6 +653,49 @@ async def ban(interaction: discord.Interaction, member: discord.Member,
         return
     await member.ban(reason=f"{interaction.user}: {reason}")
     await interaction.response.send_message(f"🔨 Banned **{member}** — {reason}")
+    await mod_log(interaction.guild, "🔨 Member banned", interaction.user, member,
+                  reason, discord.Color.red())
+
+
+@bot.tree.command(name="idban", description="Ban a user by ID, even if they're not in the server")
+@app_commands.checks.has_permissions(ban_members=True)
+async def idban(interaction: discord.Interaction, user_id: str,
+                reason: str = "No reason given"):
+    try:
+        uid = int(user_id)
+    except ValueError:
+        return await interaction.response.send_message("That isn't a valid ID.", ephemeral=True)
+    member = interaction.guild.get_member(uid)
+    if member and not await check_target(interaction, member):
+        return
+    try:
+        await interaction.guild.ban(discord.Object(id=uid),
+                                    reason=f"{interaction.user}: {reason}")
+    except discord.NotFound:
+        return await interaction.response.send_message("No user found with that ID.",
+                                                       ephemeral=True)
+    except discord.Forbidden:
+        return await interaction.response.send_message(
+            "I don't have permission to ban that user.", ephemeral=True)
+    await interaction.response.send_message(f"🔨 Banned ID `{uid}` — {reason}")
+    await mod_log(interaction.guild, "🔨 ID banned", interaction.user, f"`{uid}`",
+                  reason, discord.Color.red())
+
+
+@bot.tree.command(name="softban", description="Ban then unban a member to delete their recent messages")
+@app_commands.checks.has_permissions(ban_members=True)
+async def softban(interaction: discord.Interaction, member: discord.Member,
+                  days: app_commands.Range[int, 1, 7] = 1,
+                  reason: str = "No reason given"):
+    if not await check_target(interaction, member):
+        return
+    await interaction.response.defer()
+    await member.ban(reason=f"Softban by {interaction.user}: {reason}",
+                     delete_message_seconds=days * 86400)
+    await interaction.guild.unban(member, reason="Softban")
+    await interaction.followup.send(
+        f"🧹 Softbanned **{member}** (deleted {days} day(s) of messages) — {reason}")
+    await mod_log(interaction.guild, "🧹 Member softbanned", interaction.user, member, reason)
 
 
 @bot.tree.command(name="unban", description="Unban a user by their ID")
@@ -488,6 +707,8 @@ async def unban(interaction: discord.Interaction, user_id: str):
         return await interaction.response.send_message(
             "Couldn't find a ban for that ID.", ephemeral=True)
     await interaction.response.send_message(f"✅ Unbanned `{user_id}`")
+    await mod_log(interaction.guild, "✅ User unbanned", interaction.user,
+                  f"`{user_id}`", color=discord.Color.green())
 
 
 @bot.tree.command(name="timeout", description="Timeout a member")
@@ -500,6 +721,8 @@ async def timeout(interaction: discord.Interaction, member: discord.Member,
     await member.timeout(timedelta(minutes=minutes), reason=f"{interaction.user}: {reason}")
     await interaction.response.send_message(
         f"🔇 Timed out **{member}** for {minutes} min — {reason}")
+    await mod_log(interaction.guild, f"🔇 Timeout ({minutes} min)", interaction.user,
+                  member, reason)
 
 
 @bot.tree.command(name="untimeout", description="Remove a member's timeout")
@@ -507,6 +730,8 @@ async def timeout(interaction: discord.Interaction, member: discord.Member,
 async def untimeout(interaction: discord.Interaction, member: discord.Member):
     await member.timeout(None)
     await interaction.response.send_message(f"🔊 Removed timeout from **{member}**")
+    await mod_log(interaction.guild, "🔊 Timeout removed", interaction.user, member,
+                  color=discord.Color.green())
 
 
 @bot.tree.command(name="warn", description="Warn a member")
@@ -525,6 +750,7 @@ async def warn(interaction: discord.Interaction, member: discord.Member, reason:
         pass
     await interaction.response.send_message(
         f"⚠️ Warned **{member}** — {reason} (total warnings: {count})")
+    await mod_log(interaction.guild, f"⚠️ Warning #{count}", interaction.user, member, reason)
 
 
 @bot.tree.command(name="warnings", description="View a member's warnings")
@@ -534,11 +760,30 @@ async def warnings(interaction: discord.Interaction, member: discord.Member):
     if not items:
         return await interaction.response.send_message(
             f"{member} has no warnings.", ephemeral=True)
+    start = max(0, len(items) - 10)
     lines = [f"**{i}.** {w['reason']} — by {w['mod']} on {w['time']}"
-             for i, w in enumerate(items[-10:], start=1)]
-    e = discord.Embed(title=f"Warnings for {member}", description="\n".join(lines),
-                      color=discord.Color.orange())
+             for i, w in enumerate(items[start:], start=start + 1)]
+    e = discord.Embed(title=f"Warnings for {member} ({len(items)} total)",
+                      description="\n".join(lines), color=discord.Color.orange())
+    e.set_footer(text="Remove one with /delwarn")
     await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+@bot.tree.command(name="delwarn", description="Remove a single warning by its number")
+@app_commands.checks.has_permissions(moderate_members=True)
+async def delwarn(interaction: discord.Interaction, member: discord.Member, number: int):
+    items = data["warnings"].get(str(member.id), [])
+    if not 1 <= number <= len(items):
+        return await interaction.response.send_message(
+            "That member doesn't have a warning with that number.", ephemeral=True)
+    removed = items.pop(number - 1)
+    if not items:
+        data["warnings"].pop(str(member.id), None)
+    save_data()
+    await interaction.response.send_message(
+        f"🗑️ Removed warning #{number} from **{member}**: {removed['reason']}")
+    await mod_log(interaction.guild, "🗑️ Warning removed", interaction.user, member,
+                  removed["reason"], discord.Color.green())
 
 
 @bot.tree.command(name="clearwarnings", description="Clear all warnings for a member")
@@ -547,14 +792,74 @@ async def clearwarnings(interaction: discord.Interaction, member: discord.Member
     data["warnings"].pop(str(member.id), None)
     save_data()
     await interaction.response.send_message(f"🧹 Cleared warnings for **{member}**")
+    await mod_log(interaction.guild, "🧹 Warnings cleared", interaction.user, member,
+                  color=discord.Color.green())
 
 
-@bot.tree.command(name="purge", description="Delete recent messages")
+@bot.tree.command(name="nick", description="Change or reset a member's nickname")
+@app_commands.checks.has_permissions(manage_nicknames=True)
+async def nick(interaction: discord.Interaction, member: discord.Member,
+               nickname: Optional[app_commands.Range[str, 1, 32]] = None):
+    if not await check_target(interaction, member):
+        return
+    await member.edit(nick=nickname, reason=f"Changed by {interaction.user}")
+    await interaction.response.send_message(
+        f"✏️ Nickname for **{member}** set to `{nickname}`." if nickname
+        else f"✏️ Reset nickname for **{member}**.")
+    await mod_log(interaction.guild, "✏️ Nickname changed", interaction.user, member,
+                  nickname or "Reset")
+
+
+async def check_role(interaction, role):
+    guild = interaction.guild
+    if role.is_default() or role.managed:
+        msg = "I can't give or remove that role."
+    elif role >= guild.me.top_role:
+        msg = "That role is higher than (or equal to) my top role."
+    elif interaction.user.id != guild.owner_id and role >= interaction.user.top_role:
+        msg = "That role is higher than (or equal to) your top role."
+    else:
+        return True
+    await interaction.response.send_message(msg, ephemeral=True)
+    return False
+
+
+@bot.tree.command(name="addrole", description="Give a role to a member")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def addrole(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    if not await check_role(interaction, role):
+        return
+    await member.add_roles(role, reason=f"By {interaction.user}")
+    await interaction.response.send_message(
+        f"✅ Gave {role.mention} to {member.mention}",
+        allowed_mentions=discord.AllowedMentions.none())
+    await mod_log(interaction.guild, "➕ Role added", interaction.user, member, role.name,
+                  discord.Color.green())
+
+
+@bot.tree.command(name="removerole", description="Remove a role from a member")
+@app_commands.checks.has_permissions(manage_roles=True)
+async def removerole(interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+    if not await check_role(interaction, role):
+        return
+    await member.remove_roles(role, reason=f"By {interaction.user}")
+    await interaction.response.send_message(
+        f"✅ Removed {role.mention} from {member.mention}",
+        allowed_mentions=discord.AllowedMentions.none())
+    await mod_log(interaction.guild, "➖ Role removed", interaction.user, member, role.name)
+
+
+@bot.tree.command(name="purge", description="Delete recent messages (optionally only from one member)")
 @app_commands.checks.has_permissions(manage_messages=True)
-async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100]):
+async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100],
+                member: Optional[discord.Member] = None):
     await interaction.response.defer(ephemeral=True)
-    deleted = await interaction.channel.purge(limit=amount)
+    check = (lambda m: m.author.id == member.id) if member else None
+    deleted = await interaction.channel.purge(limit=amount, check=check)
     await interaction.followup.send(f"🧹 Deleted {len(deleted)} messages.", ephemeral=True)
+    await mod_log(interaction.guild, "🧹 Messages purged", interaction.user,
+                  member or interaction.channel,
+                  f"{len(deleted)} messages in {interaction.channel.mention}")
 
 
 @bot.tree.command(name="slowmode", description="Set slowmode in this channel (0 turns it off)")
@@ -571,6 +876,8 @@ async def lock(interaction: discord.Interaction):
     await interaction.channel.set_permissions(interaction.guild.default_role,
                                               send_messages=False)
     await interaction.response.send_message("🔒 Channel locked.")
+    await mod_log(interaction.guild, "🔒 Channel locked", interaction.user,
+                  interaction.channel)
 
 
 @bot.tree.command(name="unlock", description="Unlock this channel")
@@ -579,6 +886,8 @@ async def unlock(interaction: discord.Interaction):
     await interaction.channel.set_permissions(interaction.guild.default_role,
                                               send_messages=None)
     await interaction.response.send_message("🔓 Channel unlocked.")
+    await mod_log(interaction.guild, "🔓 Channel unlocked", interaction.user,
+                  interaction.channel, color=discord.Color.green())
 
 
 # ---------- Info & fun ----------
@@ -587,10 +896,13 @@ async def help_cmd(interaction: discord.Interaction):
     e = discord.Embed(title="◆ Commands", color=discord.Color.blurple())
     e.add_field(name="◆ Tickets",
                 value="/on · /off · /unhide · /hidetoggle · /reseller-ticket · "
-                      "/escalate · /addticket (staff)", inline=False)
+                      "/escalate · /addticket · /purgetickets (staff)", inline=False)
+    e.add_field(name="◆ Vouches",
+                value="/vouch · /vouchstats", inline=False)
     e.add_field(name="◆ Moderation",
-                value="/kick · /ban · /unban · /timeout · /untimeout · /warn · "
-                      "/warnings · /clearwarnings · /purge · /slowmode · /lock · /unlock",
+                value="/kick · /ban · /idban · /softban · /unban · /timeout · /untimeout · "
+                      "/warn · /warnings · /delwarn · /clearwarnings · /nick · /addrole · "
+                      "/removerole · /purge · /slowmode · /lock · /unlock",
                 inline=False)
     e.add_field(name="◆ Server",
                 value="/website · /setwebsite · /setimage · /embed · /ticketpanel · /say (staff)",
@@ -706,10 +1018,4 @@ class EmbedModal(discord.ui.Modal, title="Embed Generator"):
         await interaction.response.send_message("Embed sent.", ephemeral=True)
 
 
-@bot.tree.command(name="embed", description="Create and post a custom embed")
-@app_commands.checks.has_permissions(manage_guild=True)
-async def embed(interaction: discord.Interaction):
-    await interaction.response.send_modal(EmbedModal())
-
-
-bot.run(os.getenv("DISCORD_TOKEN"))
+@bot.tree.command(name="embed",
