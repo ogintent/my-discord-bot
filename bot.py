@@ -662,7 +662,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Moderation', value='/kick · /ban · /idban · /softban · /unban · /timeout · /untimeout · /warn · /warnings · /delwarn · /clearwarnings · /nick · /addrole · /removerole · /purge · /slowmode · /lock · /unlock', inline=False)
     e.add_field(name='◆ Server', value='/website · /setwebsite · /setimage · /embed · /ticketpanel · /say (staff)', inline=False)
     e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner)', inline=False)
-    e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel', inline=False)
+    e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -707,6 +707,40 @@ async def avatar(interaction: discord.Interaction, member: Optional[discord.Memb
 async def say(interaction: discord.Interaction, message: str):
     await interaction.channel.send(message, allowed_mentions=discord.AllowedMentions.none())
     await interaction.response.send_message('Sent.', ephemeral=True)
+
+@bot.tree.command(name='discount', description='Announce a discount / sale (staff)')
+@app_commands.describe(discount='What is discounted, e.g. "ALL products" or "Valorant cheats"', amount='How much off, e.g. 20% or $5', code='Discount code, if one is needed (optional)', ends_in='How long it lasts, e.g. 2d, 12h, 1d12h (optional)', details='Extra info or conditions (optional)', channel='Where to post it (default: this channel)', ping='Role to ping (optional)')
+@staff_only()
+async def discount(interaction: discord.Interaction, discount: str, amount: str, code: Optional[str]=None, ends_in: Optional[str]=None, details: Optional[str]=None, channel: Optional[discord.TextChannel]=None, ping: Optional[discord.Role]=None):
+    secs = 0
+    if ends_in:
+        secs = parse_duration(ends_in)
+        if not secs:
+            return await interaction.response.send_message('I couldn\'t read that duration. Use something like `2d`, `12h` or `1d12h`.', ephemeral=True)
+    target = channel or interaction.channel
+    perms = target.permissions_for(interaction.guild.me)
+    if not (perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {target.mention}.', ephemeral=True)
+    e = discord.Embed(title=f'💸 {amount[:200]} OFF', description=f'**{discount[:500]}**', color=15844367, timestamp=discord.utils.utcnow())
+    if code:
+        e.add_field(name='🏷️ Code', value=f'```{code[:100]}```', inline=True)
+    if secs:
+        e.add_field(name='⏰ Ends', value=f'<t:{int(time.time() + secs)}:R>', inline=True)
+    if details:
+        e.add_field(name='📋 Details', value=details[:1000], inline=False)
+    e.add_field(name='🛒 How to get it', value='Buy on our website, or open a **Purchase** ticket.', inline=False)
+    if interaction.guild.icon:
+        e.set_thumbnail(url=interaction.guild.icon.url)
+    e.set_footer(text=f'{BUSINESS_NAME} • Limited time' if secs else f'{BUSINESS_NAME} • Sale')
+    view = discord.ui.View()
+    site = data.get('website', '')
+    if site.startswith(('http://', 'https://')):
+        view.add_item(discord.ui.Button(label='Shop Now', style=discord.ButtonStyle.link, url=site, emoji='🛒'))
+    try:
+        await target.send(content=ping.mention if ping else None, embed=e, view=view, allowed_mentions=discord.AllowedMentions(roles=[ping] if ping else []))
+    except discord.HTTPException:
+        return await interaction.response.send_message('I couldn\'t post there. Check my permissions.', ephemeral=True)
+    await interaction.response.send_message(f'✅ Discount posted in {target.mention}.', ephemeral=True)
 
 @bot.tree.command(name='poll', description='Create a poll (2-4 options)')
 async def poll(interaction: discord.Interaction, question: str, option1: str, option2: str, option3: Optional[str]=None, option4: Optional[str]=None):
