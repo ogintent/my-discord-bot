@@ -38,6 +38,7 @@ def load_data():
     return d
 
 def save_data():
+    os.makedirs(os.path.dirname(os.path.abspath(DATA_FILE)), exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 data = load_data()
@@ -624,7 +625,7 @@ async def removerole(interaction: discord.Interaction, member: discord.Member, r
 @app_commands.checks.has_permissions(manage_messages=True)
 async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100], member: Optional[discord.Member]=None):
     await interaction.response.defer(ephemeral=True)
-    check = (lambda m: m.author.id == member.id) if member else None
+    check = (lambda m: m.author.id == member.id) if member else (lambda m: True)
     deleted = await interaction.channel.purge(limit=amount, check=check)
     await interaction.followup.send(f'🧹 Deleted {len(deleted)} messages.', ephemeral=True)
     await mod_log(interaction.guild, '🧹 Messages purged', interaction.user, member or interaction.channel, f'{len(deleted)} messages in {interaction.channel.mention}')
