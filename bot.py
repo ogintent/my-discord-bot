@@ -1018,4 +1018,10 @@ class EmbedModal(discord.ui.Modal, title="Embed Generator"):
         await interaction.response.send_message("Embed sent.", ephemeral=True)
 
 
-@bot.tree.command(name="embed",
+@bot.tree.command(name="embed", description="Create and post a custom embed")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def embed(interaction: discord.Interaction):
+    await interaction.response.send_modal(EmbedModal())
+
+
+bot.run(os.getenv("DISCORD_TOKEN"))
