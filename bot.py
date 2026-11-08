@@ -50,6 +50,7 @@ class MyBot(commands.Bot):
         self.add_view(CloseView())
         self.data, self.save_data, self.is_staff, self.mod_log = (data, save_data, is_staff, mod_log)
         await self.add_cog(AntiSpam(self))
+        await self.add_cog(AntiNuke(self))
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -625,7 +626,7 @@ async def removerole(interaction: discord.Interaction, member: discord.Member, r
 @app_commands.checks.has_permissions(manage_messages=True)
 async def purge(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100], member: Optional[discord.Member]=None):
     await interaction.response.defer(ephemeral=True)
-    check = (lambda m: m.author.id == member.id) if member else (lambda m: True)
+    check = (lambda m: m.author.id == member.id) if member else lambda m: True
     deleted = await interaction.channel.purge(limit=amount, check=check)
     await interaction.followup.send(f'🧹 Deleted {len(deleted)} messages.', ephemeral=True)
     await mod_log(interaction.guild, '🧹 Messages purged', interaction.user, member or interaction.channel, f'{len(deleted)} messages in {interaction.channel.mention}')
@@ -657,6 +658,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Vouches', value='/vouch · /vouchstats', inline=False)
     e.add_field(name='◆ Moderation', value='/kick · /ban · /idban · /softban · /unban · /timeout · /untimeout · /warn · /warnings · /delwarn · /clearwarnings · /nick · /addrole · /removerole · /purge · /slowmode · /lock · /unlock', inline=False)
     e.add_field(name='◆ Server', value='/website · /setwebsite · /setimage · /embed · /ticketpanel · /say (staff)', inline=False)
+    e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -875,4 +877,167 @@ class AntiSpam(commands.GroupCog, name='antispam'):
         except discord.HTTPException:
             pass
         await self.bot.mod_log(message.guild, '🛡️ Anti-spam', message.guild.me, member, f'{reason} • timeout {fmt(duration)}' if timed_out else f'{reason} • could NOT time out (check my permissions and role position)', discord.Color.red())
+NUKE_WINDOW = 10
+NUKE_ACTIONS = {discord.AuditLogAction.channel_delete: 'deleting channels', discord.AuditLogAction.channel_create: 'creating channels', discord.AuditLogAction.role_delete: 'deleting roles', discord.AuditLogAction.role_create: 'creating roles', discord.AuditLogAction.ban: 'banning members', discord.AuditLogAction.kick: 'kicking members', discord.AuditLogAction.webhook_create: 'creating webhooks'}
+NUKE_LIMITS = {'low': 5, 'medium': 3, 'high': 2}
+NUKE_PUNISHMENTS = {'ban': 'Ban', 'kick': 'Kick', 'strip': 'Strip all roles'}
+
+def owner_only():
+
+    async def predicate(interaction: discord.Interaction):
+        return interaction.guild is not None and interaction.user.id == interaction.guild.owner_id
+    return app_commands.check(predicate)
+
+class AntiNuke(commands.GroupCog, name='antinuke'):
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+        self.events = defaultdict(deque)
+        self.handled = {}
+
+    def cfg(self):
+        return self.bot.data.setdefault('antinuke', {'enabled': False, 'punishment': 'ban', 'level': 'medium', 'whitelist': []})
+
+    @app_commands.command(name='enable', description='Turn anti-nuke on (server owner only)')
+    @app_commands.describe(punishment='What happens to someone who starts nuking', sensitivity='How quickly it reacts (default: medium)')
+    @app_commands.choices(punishment=[app_commands.Choice(name='Ban them', value='ban'), app_commands.Choice(name='Kick them', value='kick'), app_commands.Choice(name='Strip all their roles', value='strip')], sensitivity=[app_commands.Choice(name='Low (5 actions in 10s)', value='low'), app_commands.Choice(name='Medium (3 actions in 10s)', value='medium'), app_commands.Choice(name='High (2 actions in 10s)', value='high')])
+    @owner_only()
+    async def enable(self, interaction: discord.Interaction, punishment: app_commands.Choice[str], sensitivity: Optional[app_commands.Choice[str]]=None):
+        level = sensitivity.value if sensitivity else 'medium'
+        self.cfg().update(enabled=True, punishment=punishment.value, level=level)
+        self.bot.save_data()
+        perms = interaction.guild.me.guild_permissions
+        need = {'ban': ('ban_members', 'Ban Members'), 'kick': ('kick_members', 'Kick Members'), 'strip': ('manage_roles', 'Manage Roles')}[punishment.value]
+        note = ''
+        if not perms.view_audit_log:
+            note += "\n⚠️ I need the **View Audit Log** permission or anti-nuke can't see anything."
+        if not getattr(perms, need[0]):
+            note += f'\n⚠️ I need **{need[1]}** to carry out the punishment.'
+        await interaction.response.send_message(f'🛡️ Anti-nuke is **ON**. Punishment: **{punishment.name}**. Sensitivity: **{level}** ({NUKE_LIMITS[level]} of the same action in {NUKE_WINDOW}s).{note}', ephemeral=True)
+
+    @app_commands.command(name='disable', description='Turn anti-nuke off (server owner only)')
+    @owner_only()
+    async def disable(self, interaction: discord.Interaction):
+        self.cfg()['enabled'] = False
+        self.bot.save_data()
+        self.events.clear()
+        await interaction.response.send_message('🛡️ Anti-nuke is now **OFF**.', ephemeral=True)
+
+    @app_commands.command(name='status', description='See the anti-nuke settings (server owner only)')
+    @owner_only()
+    async def status(self, interaction: discord.Interaction):
+        c = self.cfg()
+        perms = interaction.guild.me.guild_permissions
+        e = discord.Embed(title='🛡️ Anti-nuke', color=discord.Color.green() if c['enabled'] else discord.Color.red())
+        e.add_field(name='Status', value='ON' if c['enabled'] else 'OFF')
+        e.add_field(name='Punishment', value=NUKE_PUNISHMENTS[c['punishment']])
+        e.add_field(name='Sensitivity', value=f"{c['level'].title()} ({NUKE_LIMITS[c['level']]} in {NUKE_WINDOW}s)")
+        e.add_field(name='Watching for', inline=False, value='• ' + '\n• '.join(NUKE_ACTIONS.values()) + '\n• unapproved bots being added')
+        e.add_field(name='Trusted (ignored)', inline=False, value=', '.join((f'<@{u}>' for u in c['whitelist'])) or 'Nobody (you, the owner, are always trusted)')
+        e.add_field(name='My permissions', inline=False, value=f"View Audit Log: {('✅' if perms.view_audit_log else '❌')}  Ban: {('✅' if perms.ban_members else '❌')}  Kick: {('✅' if perms.kick_members else '❌')}  Manage Roles: {('✅' if perms.manage_roles else '❌')}")
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @app_commands.command(name='whitelist', description='Trust a member or bot so anti-nuke ignores them')
+    @owner_only()
+    async def whitelist(self, interaction: discord.Interaction, member: discord.Member):
+        wl = self.cfg()['whitelist']
+        if member.id not in wl:
+            wl.append(member.id)
+            self.bot.save_data()
+        await interaction.response.send_message(f'✅ {member.mention} is now trusted.', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='unwhitelist', description='Stop trusting a member or bot')
+    @owner_only()
+    async def unwhitelist(self, interaction: discord.Interaction, member: discord.Member):
+        wl = self.cfg()['whitelist']
+        if member.id in wl:
+            wl.remove(member.id)
+            self.bot.save_data()
+        await interaction.response.send_message(f'✅ {member.mention} is no longer trusted.', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.Cog.listener()
+    async def on_audit_log_entry_create(self, entry):
+        c = self.cfg()
+        if not c['enabled']:
+            return
+        guild = entry.guild
+        uid = entry.user_id
+        if uid is None or uid == guild.owner_id or uid == self.bot.user.id or (uid in c['whitelist']):
+            return
+        now = time.monotonic()
+        if now - self.handled.get((guild.id, uid), -999) < 30:
+            return
+        target = getattr(entry.target, 'id', None) or getattr(entry, 'target_id', None)
+        if entry.action == discord.AuditLogAction.bot_add:
+            if target is not None and target not in c['whitelist']:
+                await self.block_bot(guild, uid, target)
+            return
+        what = NUKE_ACTIONS.get(entry.action)
+        if what is None:
+            return
+        dq = self.events[guild.id, uid, entry.action]
+        dq.append((now, target))
+        while dq and now - dq[0][0] > NUKE_WINDOW:
+            dq.popleft()
+        if len(dq) >= NUKE_LIMITS[c['level']]:
+            await self.punish(guild, uid, what, len(dq))
+
+    async def block_bot(self, guild, adder_id, bot_id):
+        try:
+            await guild.kick(discord.Object(id=bot_id), reason='Anti-nuke: bot added by an untrusted user')
+            result = 'The bot was removed.'
+        except discord.HTTPException:
+            result = 'I could NOT remove it (check my permissions and role position).'
+        await self.alert(guild, '🤖 Unapproved bot added', adder_id, f'<@{adder_id}> added <@{bot_id}>. {result}\nUse `/antinuke whitelist` on a bot to allow it.')
+
+    async def punish(self, guild, uid, what, count):
+        c = self.cfg()
+        self.handled[guild.id, uid] = time.monotonic()
+        banned = [t for _, t in self.events.get((guild.id, uid, discord.AuditLogAction.ban), []) if t]
+        for key in [k for k in self.events if k[0] == guild.id and k[1] == uid]:
+            del self.events[key]
+        member = guild.get_member(uid)
+        if member is None:
+            try:
+                member = await guild.fetch_member(uid)
+            except discord.HTTPException:
+                member = None
+        mode = c['punishment']
+        if mode == 'strip' and (member is None or member.bot):
+            mode = 'kick'
+        reason = f'Anti-nuke: {what}'
+        try:
+            if mode == 'ban':
+                await guild.ban(discord.Object(id=uid), reason=reason, delete_message_seconds=0)
+            elif mode == 'kick':
+                await guild.kick(discord.Object(id=uid), reason=reason)
+            else:
+                keep = [r for r in member.roles if r.is_default() or r.managed or r >= guild.me.top_role]
+                await member.edit(roles=keep, reason=reason)
+            done = {'ban': 'banned', 'kick': 'kicked', 'strip': 'stripped of all roles'}[mode]
+        except discord.HTTPException:
+            done = None
+        undone = 0
+        for tid in banned:
+            try:
+                await guild.unban(discord.Object(id=tid), reason='Anti-nuke: undoing mass ban')
+                undone += 1
+            except discord.HTTPException:
+                pass
+        detail = f'<@{uid}> did {count}+ actions of **{what}** within {NUKE_WINDOW} seconds.\n'
+        detail += f'They were **{done}**.' if done else 'I could **NOT** punish them. Check my permissions and move my role higher.'
+        if undone:
+            detail += f'\nUnbanned {undone} member(s) they banned.'
+        detail += "\nDeleted channels and roles can't be restored automatically."
+        await self.alert(guild, '🚨 Anti-nuke triggered', uid, detail)
+
+    async def alert(self, guild, title, uid, detail):
+        member = guild.get_member(uid)
+        await self.bot.mod_log(guild, title, guild.me, member or f'<@{uid}> (`{uid}`)', detail, discord.Color.red())
+        try:
+            owner = guild.owner or await guild.fetch_member(guild.owner_id)
+            await owner.send(f'**{title}** in **{guild.name}**\n{detail}')
+        except (discord.HTTPException, AttributeError):
+            pass
 bot.run(os.getenv('DISCORD_TOKEN'))
