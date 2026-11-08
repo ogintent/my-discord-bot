@@ -1,6 +1,7 @@
 import os, io, json, copy, time, random, asyncio
 from datetime import timedelta
 from typing import Optional
+from collections import defaultdict, deque
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -18,6 +19,7 @@ MOD_LOG_CHANNEL_ID = int(os.getenv('MOD_LOG_CHANNEL_ID', '0'))
 BUSINESS_NAME = 'Frontline'
 VOUCH_COOLDOWN_SECONDS = 30
 intents = discord.Intents.default()
+intents.message_content = os.getenv('MESSAGE_CONTENT') == '1'
 PANEL_TITLE = '◆ Frontline Support'
 PANEL_LINES = ['TO PURCHASE MANUALLY, PRESS PURCHASE.', 'DO NOT ASK TO ASK. SIMPLY ASK YOUR QUESTION.', 'FOR MEDIA APPLICATIONS. PRESS "MEDIA" BUTTON.', 'FOR AUTOMATIC DELIVERY, USE THE WEBSITE.']
 PAYMENT_METHODS = ['💰 CRYPTO CURRENCIES', '💰 PAYPAL (FAMILY & FRIENDS) (MUST PAY ON DISCORD)', '💰 CASHAPP', '💰 CREDIT CARDS (MUST PAY ON DISCORD)', '💰 ZELLE (MUST PAY ON DISCORD)', '💰 VENMO (MUST PAY ON DISCORD)']
@@ -45,6 +47,8 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
         self.add_view(OpenView())
         self.add_view(CloseView())
+        self.data, self.save_data, self.is_staff, self.mod_log = (data, save_data, is_staff, mod_log)
+        await self.add_cog(AntiSpam(self))
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -745,4 +749,129 @@ class EmbedModal(discord.ui.Modal, title='Embed Generator'):
 @app_commands.checks.has_permissions(manage_guild=True)
 async def embed(interaction: discord.Interaction):
     await interaction.response.send_modal(EmbedModal())
+DURATIONS = [('60 seconds', 60), ('5 minutes', 300), ('10 minutes', 600), ('30 minutes', 1800), ('1 hour', 3600), ('6 hours', 21600), ('1 day', 86400), ('1 week', 604800)]
+LEVELS = {'low': (7, 5, 8, 5), 'medium': (5, 5, 5, 4), 'high': (4, 4, 4, 3)}
+DUP_WINDOW = 20
+
+def fmt(seconds):
+    for label, value in DURATIONS:
+        if value == seconds:
+            return label
+    return f'{seconds} seconds'
+
+class AntiSpam(commands.GroupCog, name='antispam'):
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+        self.history = defaultdict(deque)
+        self.busy = set()
+
+    def cfg(self):
+        return self.bot.data.setdefault('antispam', {'enabled': False, 'timeout': 600, 'level': 'medium', 'messages': 5, 'seconds': 5, 'mentions': 5, 'duplicates': 4})
+
+    @app_commands.command(name='enable', description='Turn anti-spam on and choose the timeout length')
+    @app_commands.describe(timeout='How long spammers are timed out', sensitivity='How strict it is (default: medium)')
+    @app_commands.choices(timeout=[app_commands.Choice(name=n, value=v) for n, v in DURATIONS], sensitivity=[app_commands.Choice(name='Low (relaxed)', value='low'), app_commands.Choice(name='Medium', value='medium'), app_commands.Choice(name='High (strict)', value='high')])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def enable(self, interaction: discord.Interaction, timeout: app_commands.Choice[int], sensitivity: Optional[app_commands.Choice[str]]=None):
+        level = sensitivity.value if sensitivity else 'medium'
+        m, s, men, dup = LEVELS[level]
+        c = self.cfg()
+        c.update(enabled=True, timeout=timeout.value, level=level, messages=m, seconds=s, mentions=men, duplicates=dup)
+        self.bot.save_data()
+        note = ''
+        if not interaction.guild.me.guild_permissions.moderate_members:
+            note += "\n⚠️ I don't have the **Moderate Members** permission, so I can't time anyone out yet."
+        if not interaction.guild.me.guild_permissions.manage_messages:
+            note += "\n⚠️ I don't have **Manage Messages**, so I can't delete spam."
+        await interaction.response.send_message(f'🛡️ Anti-spam is **ON**. Spammers get a **{timeout.name}** timeout (sensitivity: **{level}**).{note}', ephemeral=True)
+
+    @app_commands.command(name='disable', description='Turn anti-spam off')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def disable(self, interaction: discord.Interaction):
+        self.cfg()['enabled'] = False
+        self.bot.save_data()
+        self.history.clear()
+        await interaction.response.send_message('🛡️ Anti-spam is now **OFF**.', ephemeral=True)
+
+    @app_commands.command(name='status', description='See the current anti-spam settings')
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def status(self, interaction: discord.Interaction):
+        c = self.cfg()
+        dup_ok = self.bot.intents.message_content
+        e = discord.Embed(title='🛡️ Anti-spam', color=discord.Color.green() if c['enabled'] else discord.Color.red())
+        e.add_field(name='Status', value='ON' if c['enabled'] else 'OFF')
+        e.add_field(name='Timeout', value=fmt(c['timeout']))
+        e.add_field(name='Sensitivity', value=c['level'].title())
+        e.add_field(name='Triggers', inline=False, value=f"• {c['messages']}+ messages in {c['seconds']}s\n• {c['mentions']}+ mentions in one message\n" + (f"• {c['duplicates']}+ identical messages in {DUP_WINDOW}s" if dup_ok else '• Repeated-message detection is off (needs Message Content Intent)'))
+        e.set_footer(text='Staff, admins, people with Manage Messages and ticket channels are ignored.')
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    def sweep(self, now):
+        for key in [k for k, d in self.history.items() if not d or now - d[-1][0] > 60]:
+            del self.history[key]
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        c = self.cfg()
+        if not c['enabled'] or message.guild is None or message.author.bot:
+            return
+        member = message.author
+        if not isinstance(member, discord.Member):
+            return
+        if self.bot.is_staff(member) or member.guild_permissions.manage_messages:
+            return
+        ch = message.channel
+        if isinstance(ch, discord.TextChannel) and ch.topic and ch.topic.isdigit():
+            return
+        key = (message.guild.id, member.id)
+        if key in self.busy:
+            return
+        now = time.monotonic()
+        if len(self.history) > 500:
+            self.sweep(now)
+        hist = self.history[key]
+        hist.append((now, message))
+        while hist and now - hist[0][0] > max(c['seconds'], DUP_WINDOW):
+            hist.popleft()
+        reason = None
+        recent = [m for t, m in hist if now - t <= c['seconds']]
+        if len(recent) >= c['messages']:
+            reason = f"sending {len(recent)} messages in {c['seconds']} seconds"
+        elif len(message.mentions) + len(message.role_mentions) >= c['mentions']:
+            reason = 'mass mentioning'
+        elif message.content:
+            same = [m for t, m in hist if m.content == message.content]
+            if len(same) >= c['duplicates']:
+                reason = 'repeating the same message'
+        if not reason:
+            return
+        msgs = [m for _, m in hist]
+        self.history.pop(key, None)
+        self.busy.add(key)
+        try:
+            await self.punish(message, member, reason, msgs)
+        finally:
+            self.busy.discard(key)
+
+    async def punish(self, message, member, reason, msgs):
+        duration = self.cfg()['timeout']
+        timed_out = False
+        try:
+            await member.timeout(timedelta(seconds=duration), reason=f'Anti-spam: {reason}')
+            timed_out = True
+        except discord.HTTPException:
+            pass
+        for m in msgs:
+            try:
+                await m.delete()
+            except discord.HTTPException:
+                pass
+        text = f'🚫 {member.mention} was timed out for **{fmt(duration)}** for {reason}.' if timed_out else f'⚠️ {member.mention}, please stop spamming ({reason}).'
+        try:
+            await message.channel.send(text, delete_after=10, allowed_mentions=discord.AllowedMentions(users=[member]))
+        except discord.HTTPException:
+            pass
+        await self.bot.mod_log(message.guild, '🛡️ Anti-spam', message.guild.me, member, f'{reason} • timeout {fmt(duration)}' if timed_out else f'{reason} • could NOT time out (check my permissions and role position)', discord.Color.red())
 bot.run(os.getenv('DISCORD_TOKEN'))
