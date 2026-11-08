@@ -1,10 +1,10 @@
-import os, io, json, copy, time, random, asyncio
-from datetime import timedelta
+import os, io, json, copy, time, random, asyncio, re
+from datetime import timedelta, datetime, timezone
 from typing import Optional
 from collections import defaultdict, deque
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from dotenv import load_dotenv
 load_dotenv()
 STAFF_ROLE_ID = int(os.getenv('STAFF_ROLE_ID'))
@@ -51,6 +51,9 @@ class MyBot(commands.Bot):
         self.data, self.save_data, self.is_staff, self.mod_log = (data, save_data, is_staff, mod_log)
         await self.add_cog(AntiSpam(self))
         await self.add_cog(AntiNuke(self))
+        await self.add_cog(Giveaway(self))
+        await self.add_cog(StaffApps(self))
+        await self.add_cog(Community(self))
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -659,6 +662,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Moderation', value='/kick · /ban · /idban · /softban · /unban · /timeout · /untimeout · /warn · /warnings · /delwarn · /clearwarnings · /nick · /addrole · /removerole · /purge · /slowmode · /lock · /unlock', inline=False)
     e.add_field(name='◆ Server', value='/website · /setwebsite · /setimage · /embed · /ticketpanel · /say (staff)', inline=False)
     e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner)', inline=False)
+    e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -1040,4 +1044,658 @@ class AntiNuke(commands.GroupCog, name='antinuke'):
             await owner.send(f'**{title}** in **{guild.name}**\n{detail}')
         except (discord.HTTPException, AttributeError):
             pass
+GW_MIN, GW_MAX = (10, 30 * 86400)
+GW_KEEP = 7 * 86400
+GW_COLOR = 15844367
+GW_ENDED_COLOR = 9807270
+
+def parse_duration(text):
+    """'30m', '2h', '1d12h', '2h 30m' -> seconds. Returns 0 if it can't be read."""
+    units = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}
+    text = text.lower()
+    if re.sub('\\d+\\s*[smhdw]|\\s', '', text):
+        return 0
+    return sum((int(n) * units[u] for n, u in re.findall('(\\d+)\\s*([smhdw])', text)))
+
+def giveaway_embed(gw, guild):
+    end = int(gw['end'])
+    e = discord.Embed(title=f"🎉 {gw['prize']}", color=GW_ENDED_COLOR if gw['ended'] else GW_COLOR)
+    lines = [gw['desc'], ''] if gw.get('desc') else []
+    if gw['ended']:
+        winners = ' '.join((f'<@{w}>' for w in gw['winner_ids'])) or 'No valid entries'
+        lines += ['**This giveaway has ended.**', '', f'**Winners:** {winners}', f"**Hosted by:** <@{gw['host']}>", f"**Entries:** {len(gw['entries'])}", f'**Ended:** <t:{end}:R>']
+        e.set_footer(text='Giveaway ended')
+    else:
+        lines += ['Click the **🎉 Enter** button below to join!', '', f'**Ends:** <t:{end}:R> (<t:{end}:f>)', f"**Hosted by:** <@{gw['host']}>", f"**Winners:** {gw['winners']}", f"**Entries:** {len(gw['entries'])}"]
+        if gw.get('role'):
+            lines.append(f"**Requires:** <@&{gw['role']}>")
+        e.set_footer(text=f"{gw['winners']} winner{('s' if gw['winners'] != 1 else '')} • Ends at")
+        e.timestamp = datetime.fromtimestamp(gw['end'], tz=timezone.utc)
+    e.description = '\n'.join(lines)
+    if guild is not None and guild.icon:
+        e.set_thumbnail(url=guild.icon.url)
+    return e
+
+def host_only():
+
+    async def predicate(interaction: discord.Interaction):
+        return interaction.guild is not None and (interaction.client.is_staff(interaction.user) or interaction.user.guild_permissions.manage_guild)
+    return app_commands.check(predicate)
+
+class LeaveView(discord.ui.View):
+
+    def __init__(self, cog, mid):
+        super().__init__(timeout=60)
+        self.cog, self.mid = (cog, mid)
+
+    @discord.ui.button(label='Leave giveaway', style=discord.ButtonStyle.danger)
+    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        gw = self.cog.gws().get(self.mid)
+        if gw and (not gw['ended']) and (interaction.user.id in gw['entries']):
+            gw['entries'].remove(interaction.user.id)
+            self.cog.bot.save_data()
+            self.cog.dirty.add(self.mid)
+            text = 'You left the giveaway.'
+        else:
+            text = 'This giveaway has already ended.'
+        await interaction.response.edit_message(content=text, view=None)
+
+class GiveawayView(discord.ui.View):
+
+    def __init__(self, ended=False):
+        super().__init__(timeout=None)
+        self.enter.disabled = ended
+
+    @discord.ui.button(label='Enter', emoji='🎉', style=discord.ButtonStyle.primary, custom_id='giveaway:enter')
+    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = interaction.client.get_cog('giveaway')
+        mid = str(interaction.message.id)
+        gw = cog.gws().get(mid)
+        if gw is None or gw['ended'] or gw['end'] <= time.time():
+            return await interaction.response.send_message('This giveaway has ended.', ephemeral=True)
+        if gw.get('role') and (not any((r.id == gw['role'] for r in interaction.user.roles))):
+            return await interaction.response.send_message(f"You need <@&{gw['role']}> to enter this giveaway.", ephemeral=True)
+        uid = interaction.user.id
+        if uid in gw['entries']:
+            return await interaction.response.send_message("You're already entered in this giveaway. 🎉", view=LeaveView(cog, mid), ephemeral=True)
+        gw['entries'].append(uid)
+        cog.bot.save_data()
+        cog.dirty.add(mid)
+        await interaction.response.send_message(f"✅ You've entered the giveaway for **{gw['prize']}**. Good luck! 🍀", ephemeral=True)
+
+class Giveaway(commands.GroupCog, name='giveaway'):
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+        self.dirty = set()
+
+    def gws(self):
+        return self.bot.data.setdefault('giveaways', {})
+
+    async def cog_load(self):
+        self.bot.add_view(GiveawayView())
+        self.tick.start()
+
+    async def cog_unload(self):
+        self.tick.cancel()
+
+    @app_commands.command(name='start', description='Start a giveaway')
+    @app_commands.describe(prize="What you're giving away", duration='How long it runs, e.g. 30m, 2h, 1d or 1d12h', winners='How many winners (default 1)', channel='Where to post it (default: this channel)', required_role='Only members with this role can enter', description='Extra text to show in the giveaway')
+    @host_only()
+    async def gw_start(self, interaction: discord.Interaction, prize: app_commands.Range[str, 1, 200], duration: str, winners: app_commands.Range[int, 1, 20]=1, channel: Optional[discord.TextChannel]=None, required_role: Optional[discord.Role]=None, description: Optional[app_commands.Range[str, 1, 500]]=None):
+        secs = parse_duration(duration)
+        if not GW_MIN <= secs <= GW_MAX:
+            return await interaction.response.send_message('Duration must be between 10 seconds and 30 days, like `30m`, `2h`, `1d` or `1d12h`.', ephemeral=True)
+        ch = channel or interaction.channel
+        await interaction.response.defer(ephemeral=True)
+        gw = {'guild_id': interaction.guild.id, 'channel_id': ch.id, 'prize': prize, 'host': interaction.user.id, 'winners': winners, 'end': time.time() + secs, 'entries': [], 'role': required_role.id if required_role else None, 'desc': description, 'ended': False, 'winner_ids': []}
+        try:
+            msg = await ch.send(embed=giveaway_embed(gw, interaction.guild), view=GiveawayView())
+        except discord.HTTPException:
+            return await interaction.followup.send(f"I can't post in {ch.mention}. Give me **Send Messages** and **Embed Links** there.", ephemeral=True)
+        self.gws()[str(msg.id)] = gw
+        self.bot.save_data()
+        await interaction.followup.send(f'🎉 Giveaway started in {ch.mention}!', ephemeral=True)
+
+    @app_commands.command(name='end', description='End a giveaway now and pick the winners')
+    @app_commands.describe(giveaway='Pick the giveaway')
+    @host_only()
+    async def gw_end(self, interaction: discord.Interaction, giveaway: str):
+        gw = self.lookup(interaction, giveaway)
+        if gw is None:
+            return await interaction.response.send_message("I couldn't find that giveaway.", ephemeral=True)
+        if gw['ended']:
+            return await interaction.response.send_message('That giveaway already ended. Use `/giveaway reroll` to pick new winners.', ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        await self.finish(giveaway)
+        await interaction.followup.send('✅ Giveaway ended.', ephemeral=True)
+
+    @app_commands.command(name='reroll', description='Pick new winners for an ended giveaway')
+    @app_commands.describe(giveaway='Pick the giveaway', winners='How many new winners (default 1)')
+    @host_only()
+    async def gw_reroll(self, interaction: discord.Interaction, giveaway: str, winners: app_commands.Range[int, 1, 20]=1):
+        gw = self.lookup(interaction, giveaway)
+        if gw is None:
+            return await interaction.response.send_message("I couldn't find that giveaway.", ephemeral=True)
+        if not gw['ended']:
+            return await interaction.response.send_message('That giveaway is still running. End it first.', ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        new = await self.pick(guild, gw, winners, gw['winner_ids'])
+        if not new:
+            return await interaction.followup.send('There are no more valid entries to pick from.', ephemeral=True)
+        gw['winner_ids'] = gw['winner_ids'] + new
+        self.bot.save_data()
+        channel = guild.get_channel(gw['channel_id'])
+        if channel:
+            try:
+                await channel.get_partial_message(int(giveaway)).edit(embed=giveaway_embed(gw, guild))
+            except discord.HTTPException:
+                pass
+            await self.announce(channel, gw, giveaway, new, reroll=True)
+        await interaction.followup.send('✅ Rerolled.', ephemeral=True)
+
+    @app_commands.command(name='cancel', description='Cancel a giveaway without picking winners')
+    @app_commands.describe(giveaway='Pick the giveaway')
+    @host_only()
+    async def gw_cancel(self, interaction: discord.Interaction, giveaway: str):
+        gw = self.lookup(interaction, giveaway)
+        if gw is None:
+            return await interaction.response.send_message("I couldn't find that giveaway.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.guild.get_channel(gw['channel_id'])
+        if channel:
+            try:
+                await channel.get_partial_message(int(giveaway)).delete()
+            except discord.HTTPException:
+                pass
+        self.gws().pop(giveaway, None)
+        self.dirty.discard(giveaway)
+        self.bot.save_data()
+        await interaction.followup.send('🗑️ Giveaway cancelled and removed.', ephemeral=True)
+
+    @app_commands.command(name='list', description='Show the giveaways that are running')
+    @host_only()
+    async def gw_list(self, interaction: discord.Interaction):
+        rows = [(mid, gw) for mid, gw in self.gws().items() if gw['guild_id'] == interaction.guild_id and (not gw['ended'])]
+        if not rows:
+            return await interaction.response.send_message('No giveaways are running.', ephemeral=True)
+        rows.sort(key=lambda r: r[1]['end'])
+        lines = [f"**{gw['prize'][:60]}** • ends <t:{int(gw['end'])}:R> • {len(gw['entries'])} entries • [jump](https://discord.com/channels/{gw['guild_id']}/{gw['channel_id']}/{mid})" for mid, gw in rows[:20]]
+        await interaction.response.send_message(embed=discord.Embed(title='🎉 Active giveaways', description='\n'.join(lines), color=GW_COLOR), ephemeral=True)
+
+    @gw_end.autocomplete('giveaway')
+    @gw_reroll.autocomplete('giveaway')
+    @gw_cancel.autocomplete('giveaway')
+    async def giveaway_choices(self, interaction: discord.Interaction, current: str):
+        out = []
+        for mid, gw in sorted(self.gws().items(), key=lambda r: -r[1]['end']):
+            if gw['guild_id'] == interaction.guild_id and current.lower() in gw['prize'].lower():
+                tag = 'ended' if gw['ended'] else 'running'
+                out.append(app_commands.Choice(name=f"{gw['prize'][:70]} ({tag})", value=mid))
+        return out[:25]
+
+    def lookup(self, interaction, mid):
+        gw = self.gws().get(mid)
+        return gw if gw and gw['guild_id'] == interaction.guild_id else None
+
+    async def pick(self, guild, gw, count, exclude):
+        pool = [u for u in gw['entries'] if u not in exclude]
+        random.shuffle(pool)
+        role = guild.get_role(gw['role']) if gw.get('role') else None
+        chosen = []
+        for uid in pool:
+            if len(chosen) >= count:
+                break
+            member = guild.get_member(uid)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(uid)
+                except discord.HTTPException:
+                    continue
+            if member.bot or (role and role not in member.roles):
+                continue
+            chosen.append(uid)
+        return chosen
+
+    async def finish(self, mid):
+        gw = self.gws().get(mid)
+        if gw is None or gw['ended']:
+            return
+        gw['ended'] = True
+        gw['end'] = min(gw['end'], time.time())
+        self.dirty.discard(mid)
+        guild = self.bot.get_guild(gw['guild_id'])
+        gw['winner_ids'] = await self.pick(guild, gw, gw['winners'], []) if guild else []
+        self.bot.save_data()
+        channel = guild.get_channel(gw['channel_id']) if guild else None
+        if channel is None:
+            return
+        try:
+            await channel.get_partial_message(int(mid)).edit(embed=giveaway_embed(gw, guild), view=GiveawayView(ended=True))
+        except discord.HTTPException:
+            pass
+        await self.announce(channel, gw, mid, gw['winner_ids'])
+
+    async def announce(self, channel, gw, mid, winners, reroll=False):
+        jump = f"https://discord.com/channels/{gw['guild_id']}/{gw['channel_id']}/{mid}"
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label='Jump to giveaway', url=jump))
+        if winners:
+            mentions = ' '.join((f'<@{w}>' for w in winners))
+            text = f"🔄 New winner{('s' if len(winners) > 1 else '')}: {mentions}! You won **{gw['prize']}**!" if reroll else f"🎉 Congratulations {mentions}! You won **{gw['prize']}**!"
+        else:
+            text = f"😢 There were no valid entries, so nobody won **{gw['prize']}**."
+        try:
+            await channel.send(text, view=view, allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=w) for w in winners]))
+        except discord.HTTPException:
+            pass
+        for w in winners:
+            try:
+                user = await self.bot.fetch_user(w)
+                await user.send(f"🎉 You won **{gw['prize']}** in **{channel.guild.name}**!\n{jump}")
+            except discord.HTTPException:
+                pass
+
+    @tasks.loop(seconds=5)
+    async def tick(self):
+        now = time.time()
+        for mid, gw in list(self.gws().items()):
+            try:
+                if not gw['ended'] and gw['end'] <= now:
+                    await self.finish(mid)
+                elif gw['ended'] and now - gw['end'] > GW_KEEP:
+                    self.gws().pop(mid, None)
+                    self.bot.save_data()
+            except Exception as e:
+                print(f'Giveaway error ({mid}): {e}')
+        for mid in list(self.dirty):
+            self.dirty.discard(mid)
+            gw = self.gws().get(mid)
+            if not gw or gw['ended']:
+                continue
+            try:
+                guild = self.bot.get_guild(gw['guild_id'])
+                channel = guild.get_channel(gw['channel_id']) if guild else None
+                if channel:
+                    await channel.get_partial_message(int(mid)).edit(embed=giveaway_embed(gw, guild))
+            except Exception as e:
+                print(f'Giveaway refresh error ({mid}): {e}')
+
+    @tick.before_loop
+    async def before_tick(self):
+        await self.bot.wait_until_ready()
+APP_COLOR = 15844367
+APP_COOLDOWN = 7 * 86400
+APP_QUESTIONS = [('Age & Date of Birth', 'Example: 19 - 04/12/2006'), ('Timezone & availability', 'Your timezone, which days you can be active, and about how many hours per day.'), ('Have you ever been staff for ANY OTHER cheating service?', 'If yes: which ones, your role, and why you left. If no, just say "No".'), ('Have you ever cheated with any of our cheats/products?', 'Be honest. If yes, which product(s) and roughly when.'), ('Do you have any previous reseller, support or moderation experience?', 'Where, what you did, and for how long.'), ('Have you ever been banned from, scammed, leaked from, or caused a chargeback with a cheat provider or community?', 'If yes, explain what happened.'), ('Why do you want to join our team?', 'A few sentences is fine.'), ('Why should we pick you over other applicants?', 'What makes you a good fit?'), ('A customer says one of our products got them banned and demands a refund. What do you do?', "Walk us through how you'd handle it."), ('A customer asks you to "go outside the ticket" or pay a way we don\'t accept. How do you respond?', 'What would you say or do?'), ('You notice another staff member breaking rules or leaking information. What do you do?', 'Be specific.'), ('Do you understand payment methods like crypto, PayPal and CashApp, and the risks of scams and chargebacks?', 'Explain what you know and any experience you have.'), ('Are you comfortable keeping all customer and company information private?', "Tell us how you'd handle sensitive information."), ('Anything else we should know?', 'Optional. Type "none" to skip.')]
+APP_QUICK = {0: 'Age & DOB', 2: 'Staff for another cheating service?', 3: 'Cheated with our products?'}
+APP_PANEL_DESC = "Want to join the **Frontline** team? Click **Apply** below and I'll send you the application in your DMs.\n\n**Before you apply**\n• Your DMs must be open\n• Be honest. We check everything\n• Be active, professional and mature\n\n**How it works**\n1️⃣ Click **Apply**\n2️⃣ Answer the questions in your DMs\n3️⃣ Our team reviews it and DMs you the result"
+VERIFY_DESC = 'Welcome to **Frontline**! 👋\n\nClick the button below to verify yourself and unlock the rest of the server.'
+BOOSTER_DISCOUNT = '20%'
+BOOSTER_PERKS = [f'💸 **{BOOSTER_DISCOUNT} off all orders**', '⚡ **Priority support** in your tickets', '🎨 An exclusive **Booster** role', '🎁 **Early access** to new products and restocks', '🎉 Access to **booster-only giveaways**']
+
+def manager_only():
+
+    async def predicate(interaction: discord.Interaction):
+        return interaction.guild is not None and interaction.user.guild_permissions.manage_guild
+    return app_commands.check(predicate)
+
+def answer_embeds(answers):
+    """Split the answers into embeds that stay under Discord's 6000-character limit."""
+    embeds, cur, size = ([], discord.Embed(color=2829617), 0)
+    for i, (q, _) in enumerate(APP_QUESTIONS):
+        name, value = (f'{i + 1}. {q}'[:256], answers[i])
+        if size + len(name) + len(value) > 5000 or len(cur.fields) >= 20:
+            embeds.append(cur)
+            cur, size = (discord.Embed(color=2829617), 0)
+        cur.add_field(name=name, value=value, inline=False)
+        size += len(name) + len(value)
+    embeds.append(cur)
+    return embeds
+
+class ConfirmView(discord.ui.View):
+
+    def __init__(self, user_id):
+        super().__init__(timeout=300)
+        self.user_id, self.value = (user_id, None)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return interaction.user.id == self.user_id
+
+    @discord.ui.button(label='Submit application', emoji='✅', style=discord.ButtonStyle.success)
+    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = True
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.danger)
+    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.value = False
+        await interaction.response.edit_message(view=None)
+        self.stop()
+
+class ApplyView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label='Apply', emoji='📝', style=discord.ButtonStyle.success, custom_id='apps:apply')
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.client.get_cog('staffapps').begin(interaction)
+
+class DecisionModal(discord.ui.Modal):
+    note = discord.ui.TextInput(label='Note to the applicant (optional)', style=discord.TextStyle.paragraph, required=False, max_length=500)
+
+    def __init__(self, cog, message, accept):
+        super().__init__(title='Accept application' if accept else 'Deny application')
+        self.cog, self.message, self.accept = (cog, message, accept)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.cog.decide(interaction, self.message, self.accept, self.note.value)
+
+class AppReviewView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def start(self, interaction, accept):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message('Only members with **Manage Server** can review applications.', ephemeral=True)
+        cog = interaction.client.get_cog('staffapps')
+        app = cog.cfg()['list'].get(str(interaction.message.id))
+        if app is None or app['status'] != 'pending':
+            return await interaction.response.send_message('That application was already handled.', ephemeral=True)
+        await interaction.response.send_modal(DecisionModal(cog, interaction.message, accept))
+
+    @discord.ui.button(label='Accept', emoji='✅', style=discord.ButtonStyle.success, custom_id='apps:accept')
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.start(interaction, True)
+
+    @discord.ui.button(label='Deny', emoji='❌', style=discord.ButtonStyle.danger, custom_id='apps:deny')
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.start(interaction, False)
+
+class StaffApps(commands.GroupCog, name='staffapps'):
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+        self.active = set()
+        self.jobs = set()
+
+    def cfg(self):
+        c = self.bot.data.setdefault('apps', {})
+        for k, v in (('channel', 0), ('role', 0), ('open', True), ('next', 1)):
+            c.setdefault(k, v)
+        c.setdefault('list', {})
+        return c
+
+    async def cog_load(self):
+        self.bot.add_view(ApplyView())
+        self.bot.add_view(AppReviewView())
+
+    @app_commands.command(name='setup', description='Choose where applications are sent for review')
+    @app_commands.describe(channel='Channel where finished applications are posted', role='Role to give automatically when you accept someone (optional)')
+    @manager_only()
+    async def setup_apps(self, interaction: discord.Interaction, channel: discord.TextChannel, role: Optional[discord.Role]=None):
+        perms = channel.permissions_for(interaction.guild.me)
+        if not (perms.view_channel and perms.send_messages and perms.embed_links):
+            return await interaction.response.send_message(f'I need **View Channel**, **Send Messages** and **Embed Links** in {channel.mention}.', ephemeral=True)
+        c = self.cfg()
+        c['channel'] = channel.id
+        c['role'] = role.id if role else 0
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Applications will be posted in {channel.mention}.' + (f' Accepted applicants get {role.mention}.' if role else ''), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='panel', description='Post the staff application panel here')
+    @manager_only()
+    async def panel(self, interaction: discord.Interaction):
+        e = discord.Embed(title='📝 Staff Applications', description=APP_PANEL_DESC, color=APP_COLOR)
+        if interaction.guild.icon:
+            e.set_thumbnail(url=interaction.guild.icon.url)
+        e.set_footer(text='Frontline • Staff Team')
+        await interaction.channel.send(embed=e, view=ApplyView())
+        note = '' if self.cfg()['channel'] else "\n⚠️ You haven't chosen a review channel yet. Run `/staffapps setup`."
+        await interaction.response.send_message('Panel posted.' + note, ephemeral=True)
+
+    @app_commands.command(name='toggle', description='Open or close staff applications')
+    @app_commands.choices(state=[app_commands.Choice(name='Open', value='open'), app_commands.Choice(name='Closed', value='closed')])
+    @manager_only()
+    async def toggle(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
+        self.cfg()['open'] = state.value == 'open'
+        self.bot.save_data()
+        await interaction.response.send_message(f'Applications are now **{state.name.upper()}**.', ephemeral=True)
+
+    @app_commands.command(name='pending', description='List applications waiting for review')
+    @manager_only()
+    async def pending(self, interaction: discord.Interaction):
+        c = self.cfg()
+        rows = [(mid, a) for mid, a in c['list'].items() if a['status'] == 'pending']
+        if not rows:
+            return await interaction.response.send_message('No applications are waiting.', ephemeral=True)
+        lines = [f"**#{a['n']}** <@{a['user']}> • <t:{int(a['ts'])}:R> • [open](https://discord.com/channels/{interaction.guild.id}/{c['channel']}/{mid})" for mid, a in rows[:20]]
+        await interaction.response.send_message(embed=discord.Embed(title='📝 Pending applications', description='\n'.join(lines), color=APP_COLOR), ephemeral=True)
+
+    async def begin(self, interaction):
+        c, user = (self.cfg(), interaction.user)
+        guild = interaction.guild
+        if not c['open']:
+            return await interaction.response.send_message('Staff applications are **closed** right now. Check back later!', ephemeral=True)
+        if not c['channel'] or guild.get_channel(c['channel']) is None:
+            return await interaction.response.send_message("Applications aren't set up yet. Please tell an admin.", ephemeral=True)
+        if user.id in self.active:
+            return await interaction.response.send_message("You're already filling in an application. Check your DMs!", ephemeral=True)
+        for app in c['list'].values():
+            if app['user'] != user.id:
+                continue
+            if app['status'] == 'pending':
+                return await interaction.response.send_message('You already have an application waiting for review.', ephemeral=True)
+            if app['status'] == 'accepted':
+                return await interaction.response.send_message('Your application was already accepted. 🎉', ephemeral=True)
+            if app['status'] == 'denied' and time.time() - app['ts'] < APP_COOLDOWN:
+                return await interaction.response.send_message(f"You can apply again <t:{int(app['ts'] + APP_COOLDOWN)}:R>.", ephemeral=True)
+        intro = discord.Embed(title='📝 Frontline Staff Application', description=f"Thanks for applying! There are **{len(APP_QUESTIONS)} questions**.\n\n• Reply to each question **in this chat**\n• Max **1000 characters** per answer\n• You have 15 minutes per question\n• Type `cancel` at any time to stop\n\nBe honest. We verify everything. Let's begin!", color=APP_COLOR)
+        try:
+            await user.send(embed=intro)
+        except discord.HTTPException:
+            return await interaction.response.send_message("❌ I couldn't DM you. Turn on **Direct Messages** for this server (server name → Privacy Settings), then click Apply again.", ephemeral=True)
+        await interaction.response.send_message("📬 Check your DMs. I've sent you the application!", ephemeral=True)
+        self.active.add(user.id)
+        job = asyncio.create_task(self.run(user, guild))
+        self.jobs.add(job)
+        job.add_done_callback(self.jobs.discard)
+
+    async def run(self, user, guild):
+        total = len(APP_QUESTIONS)
+        try:
+            answers = []
+            for i, (question, hint) in enumerate(APP_QUESTIONS, 1):
+                await user.send(embed=discord.Embed(title=f'Question {i}/{total}', description=f'**{question}**\n\n*{hint}*', color=APP_COLOR))
+                while True:
+                    msg = await self.bot.wait_for('message', timeout=900, check=lambda m: m.author.id == user.id and isinstance(m.channel, discord.DMChannel))
+                    text = msg.content.strip()
+                    if text.lower() == 'cancel':
+                        return await user.send('❌ Application cancelled. You can apply again any time.')
+                    if not text:
+                        await user.send('Please answer with text.')
+                    elif len(text) > 1000:
+                        await user.send(f'That answer is {len(text)} characters. Please shorten it to 1000 or less and send it again.')
+                    else:
+                        answers.append(text)
+                        break
+            view = ConfirmView(user.id)
+            await user.send(embed=discord.Embed(title='✅ All done!', description='Submit your application, or cancel to throw it away.', color=discord.Color.green()), view=view)
+            await view.wait()
+            if not view.value:
+                return await user.send('❌ Application cancelled. You can apply again any time.')
+            await self.submit(user, guild, answers)
+            await user.send(embed=discord.Embed(title='📨 Application sent!', description='Our team will review it and DM you with the result.', color=discord.Color.green()))
+        except asyncio.TimeoutError:
+            try:
+                await user.send("⌛ Your application timed out. Click **Apply** again whenever you're ready.")
+            except discord.HTTPException:
+                pass
+        except discord.HTTPException:
+            pass
+        finally:
+            self.active.discard(user.id)
+
+    async def submit(self, user, guild, answers):
+        c = self.cfg()
+        channel = guild.get_channel(c['channel'])
+        n = c['next']
+        c['next'] += 1
+        member = guild.get_member(user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user.id)
+            except discord.HTTPException:
+                member = None
+        e = discord.Embed(title=f'📝 Staff Application #{n}', color=APP_COLOR, timestamp=discord.utils.utcnow())
+        e.set_author(name=str(user), icon_url=user.display_avatar.url)
+        e.set_thumbnail(url=user.display_avatar.url)
+        e.add_field(name='Applicant', value=f'{user.mention}\n`{user.id}`')
+        e.add_field(name='Account created', value=f'<t:{int(user.created_at.timestamp())}:R>')
+        if member is not None and member.joined_at:
+            e.add_field(name='Joined server', value=f'<t:{int(member.joined_at.timestamp())}:R>')
+        for i, label in APP_QUICK.items():
+            e.add_field(name=label, value=answers[i][:300], inline=False)
+        e.set_footer(text='Status: Pending • full answers are in the thread below')
+        msg = await channel.send(embed=e, view=AppReviewView())
+        c['list'][str(msg.id)] = {'user': user.id, 'n': n, 'status': 'pending', 'ts': time.time()}
+        self.bot.save_data()
+        try:
+            target = await msg.create_thread(name=f'Application #{n} - {user.name}'[:100], auto_archive_duration=1440)
+        except discord.HTTPException:
+            target = channel
+        for emb in answer_embeds(answers):
+            await target.send(embed=emb)
+
+    async def decide(self, interaction, message, accept, note):
+        await interaction.response.defer(ephemeral=True)
+        c = self.cfg()
+        app = c['list'].get(str(message.id))
+        if app is None or app['status'] != 'pending':
+            return await interaction.followup.send('That application was already handled.', ephemeral=True)
+        app['status'] = 'accepted' if accept else 'denied'
+        app['ts'] = time.time()
+        self.bot.save_data()
+        word = 'Accepted' if accept else 'Denied'
+        emb = message.embeds[0].copy()
+        emb.color = discord.Color.green() if accept else discord.Color.red()
+        emb.add_field(name=f"{('✅' if accept else '❌')} {word}", value=f'By {interaction.user.mention}' + (f'\n{note}' if note else ''), inline=False)
+        emb.set_footer(text=f'Status: {word}')
+        try:
+            await message.edit(embed=emb, view=None)
+        except discord.HTTPException:
+            pass
+        guild = interaction.guild
+        member = guild.get_member(app['user'])
+        if member is None:
+            try:
+                member = await guild.fetch_member(app['user'])
+            except discord.HTTPException:
+                member = None
+        role_note = ''
+        if accept and c['role'] and (member is not None):
+            role = guild.get_role(c['role'])
+            try:
+                if role:
+                    await member.add_roles(role, reason=f"Staff application #{app['n']} accepted")
+            except discord.HTTPException:
+                role_note = " (I couldn't give them the role. Check my permissions and role position.)"
+        try:
+            user = member or await self.bot.fetch_user(app['user'])
+            dm = discord.Embed(title='🎉 Your staff application was accepted!' if accept else "Your staff application wasn't successful", description=(note + '\n\n' if note else '') + ('Welcome to the team! A staff member will be in touch with next steps.' if accept else 'Thank you for applying. You can apply again in 7 days.'), color=discord.Color.green() if accept else discord.Color.red())
+            await user.send(embed=dm)
+            dm_note = ''
+        except discord.HTTPException:
+            dm_note = " (Their DMs are closed, so I couldn't message them.)"
+        await interaction.followup.send(f"{word} application #{app['n']}.{role_note}{dm_note}", ephemeral=True)
+
+class VerifyView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label='Verify', emoji='✅', style=discord.ButtonStyle.success, custom_id='verify:button')
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = interaction.client.data.get('verify', {})
+        guild = interaction.guild
+        role = guild.get_role(cfg.get('role', 0))
+        if role is None:
+            return await interaction.response.send_message("Verification isn't set up yet. Please tell an admin.", ephemeral=True)
+        if role in interaction.user.roles:
+            return await interaction.response.send_message("You're already verified. ✅", ephemeral=True)
+        try:
+            await interaction.user.add_roles(role, reason='Verified')
+            remove = guild.get_role(cfg.get('remove', 0))
+            if remove and remove in interaction.user.roles:
+                await interaction.user.remove_roles(remove, reason='Verified')
+        except discord.HTTPException:
+            return await interaction.response.send_message("I couldn't give you the role. Please tell an admin.", ephemeral=True)
+        await interaction.response.send_message(f"✅ You're verified! Welcome to **{guild.name}**.", ephemeral=True)
+
+class BoosterView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label='Claim Perks', emoji='💎', style=discord.ButtonStyle.primary, custom_id='booster:claim')
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.premium_since is None:
+            return await interaction.response.send_message("💎 You're not boosting this server yet. Boost it to unlock these perks!", ephemeral=True)
+        text = f'💎 Thank you for boosting! To use your **{BOOSTER_DISCOUNT} discount**, open a **Purchase** ticket and our team will apply it to your order.'
+        role = interaction.guild.get_role(interaction.client.data.get('booster', {}).get('role', 0))
+        if role is not None and role not in interaction.user.roles:
+            try:
+                await interaction.user.add_roles(role, reason='Server booster perks')
+                text += f'\nYou also got the {role.mention} role.'
+            except discord.HTTPException:
+                pass
+        await interaction.response.send_message(text, ephemeral=True)
+
+class Community(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def cog_load(self):
+        self.bot.add_view(VerifyView())
+        self.bot.add_view(BoosterView())
+
+    @app_commands.command(name='verifypanel', description='Post the verification panel here (admin)')
+    @app_commands.describe(role='Role members get when they verify', remove_role='Role to take away when they verify, like Unverified (optional)')
+    @app_commands.checks.has_permissions(administrator=True)
+    async def verifypanel(self, interaction: discord.Interaction, role: discord.Role, remove_role: Optional[discord.Role]=None):
+        guild = interaction.guild
+        if role.managed or role.is_default() or role >= guild.me.top_role:
+            return await interaction.response.send_message(f"I can't hand out {role.mention}. Move my role **above** it in Server Settings → Roles.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        self.bot.data['verify'] = {'role': role.id, 'remove': remove_role.id if remove_role else 0}
+        self.bot.save_data()
+        e = discord.Embed(title='✅ Verification', description=VERIFY_DESC, color=discord.Color.green())
+        if guild.icon:
+            e.set_thumbnail(url=guild.icon.url)
+        e.set_footer(text=f'{guild.name} • Verification')
+        await interaction.channel.send(embed=e, view=VerifyView())
+        await interaction.response.send_message('Verification panel posted.', ephemeral=True)
+
+    @app_commands.command(name='boosterpanel', description='Post the server booster perks panel here (admin)')
+    @app_commands.describe(role='Role booster perks members get when they claim (optional)')
+    @app_commands.checks.has_permissions(administrator=True)
+    async def boosterpanel(self, interaction: discord.Interaction, role: Optional[discord.Role]=None):
+        guild = interaction.guild
+        if role is not None and (role.managed or role.is_default() or role >= guild.me.top_role):
+            return await interaction.response.send_message(f"I can't hand out {role.mention}. Move my role **above** it in Server Settings → Roles.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        self.bot.data['booster'] = {'role': role.id if role else 0}
+        self.bot.save_data()
+        e = discord.Embed(title='💎 Server Booster Perks', description=f'Boost **{guild.name}** and unlock exclusive rewards as our way of saying thank you!', color=16023551)
+        e.add_field(name='🎁 Your perks', value='\n'.join(BOOSTER_PERKS), inline=False)
+        e.add_field(name='📋 How to claim', value='1️⃣ Boost this server\n2️⃣ Click **Claim Perks** below\n3️⃣ Open a **Purchase** ticket. Staff will apply your discount', inline=False)
+        if guild.icon:
+            e.set_thumbnail(url=guild.icon.url)
+        e.set_footer(text='Perks last as long as your boost is active')
+        await interaction.channel.send(embed=e, view=BoosterView())
+        await interaction.response.send_message('Booster panel posted.', ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
