@@ -61,6 +61,8 @@ class MyBot(commands.Bot):
         await self.add_cog(IPBlock(self))
         await self.add_cog(Tools(self))
         await self.add_cog(Afk(self))
+        await self.add_cog(Welcome(self))
+        await self.add_cog(Extras(self))
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -127,6 +129,9 @@ async def check_target(interaction, member):
 
 async def mod_log(guild, action, moderator, target, reason=None, color=discord.Color.orange()):
     """Posts an embed to the mod log channel (if MOD_LOG_CHANNEL_ID is set)."""
+    if getattr(moderator, 'id', None) and (not getattr(moderator, 'bot', False)):
+        stats_for(moderator.id)['mod'] += 1
+        save_data()
     if not MOD_LOG_CHANNEL_ID:
         return
     ch = guild.get_channel(MOD_LOG_CHANNEL_ID)
@@ -267,6 +272,7 @@ class CloseView(discord.ui.View):
             return await interaction.response.send_message('Not allowed.', ephemeral=True)
         await interaction.response.send_message('Closing in 5 seconds, saving transcript...')
         text = await build_transcript(channel)
+        await record_ticket(channel)
         ai = bot.get_cog('ai')
         if ai and ai.cfg()['learn'] and GROQ_KEY and channel.topic and channel.topic.isdigit():
             convo = await ai.collect(channel)
@@ -676,7 +682,8 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner) · /filter · /censor · /ipblock', inline=False)
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
-    e.add_field(name='◆ Shop', value='/products · /afk · /discount · /vouch', inline=False)
+    e.add_field(name='◆ Shop', value='/products · /afk · /discount · /vouch · /suggest', inline=False)
+    e.add_field(name='◆ Server', value='/welcome · /announce · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -2597,4 +2604,254 @@ class Afk(commands.Cog):
                     pass
                 if len(seen) >= 3:
                     break
+SUGGEST_COLORS = {'blue': 3447003, 'green': 3066993, 'red': 15158332, 'gold': 15844367, 'purple': 10181046}
+
+def stats_for(uid):
+    return data.setdefault('staffstats', {}).setdefault(str(uid), {'tickets': 0, 'messages': 0, 'mod': 0})
+
+async def record_ticket(channel):
+    """Counts which staff members helped in a ticket. Runs when a ticket is closed."""
+    seen = {}
+    try:
+        async for m in channel.history(limit=300):
+            if m.author.bot or not m.content:
+                continue
+            member = m.author if isinstance(m.author, discord.Member) else channel.guild.get_member(m.author.id)
+            if member is not None and is_staff(member):
+                seen[member.id] = seen.get(member.id, 0) + 1
+    except discord.HTTPException:
+        return
+    for uid, n in seen.items():
+        s = stats_for(uid)
+        s['tickets'] += 1
+        s['messages'] += n
+    if seen:
+        save_data()
+
+class AnnounceModal(discord.ui.Modal, title='New announcement'):
+    heading = discord.ui.TextInput(label='Title', max_length=200)
+    body = discord.ui.TextInput(label='Message', style=discord.TextStyle.paragraph, max_length=3500)
+
+    def __init__(self, channel, ping, everyone, color, image):
+        super().__init__()
+        self.channel, self.ping, self.everyone, self.color, self.image = (channel, ping, everyone, color, image)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        e = discord.Embed(title=f'📢 {self.heading.value}', description=self.body.value, color=SUGGEST_COLORS[self.color], timestamp=discord.utils.utcnow())
+        if self.image:
+            e.set_image(url=self.image)
+        e.set_footer(text=f'{BUSINESS_NAME} • Announced by {interaction.user}')
+        content = '@everyone' if self.everyone else self.ping.mention if self.ping else None
+        try:
+            await self.channel.send(content=content, embed=e, allowed_mentions=discord.AllowedMentions(everyone=self.everyone, roles=[self.ping] if self.ping else []))
+        except discord.HTTPException:
+            return await interaction.response.send_message(f"I couldn't post in {self.channel.mention}. Check my permissions (Send Messages, Embed Links{(', Mention Everyone' if self.everyone else '')}).", ephemeral=True)
+        await interaction.response.send_message(f'✅ Announcement posted in {self.channel.mention}.', ephemeral=True)
+
+class SuggestDecision(discord.ui.Modal):
+    reason = discord.ui.TextInput(label='Reason (optional)', style=discord.TextStyle.paragraph, required=False, max_length=500)
+
+    def __init__(self, message, approve):
+        super().__init__(title='Approve suggestion' if approve else 'Deny suggestion')
+        self.message, self.approve = (message, approve)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        rec = data.get('suggestions', {}).get(str(self.message.id))
+        if rec is None or rec['status'] != 'open':
+            return await interaction.response.send_message('That suggestion was already handled.', ephemeral=True)
+        rec['status'] = 'approved' if self.approve else 'denied'
+        save_data()
+        e = self.message.embeds[0].copy()
+        e.color = discord.Color.green() if self.approve else discord.Color.red()
+        e.add_field(name='✅ Approved' if self.approve else '❌ Denied', value=f'By {interaction.user.mention}' + (f'\n{self.reason.value}' if self.reason.value else ''), inline=False)
+        await interaction.response.edit_message(embed=e, view=SuggestView(len(rec['up']), len(rec['down']), done=True))
+        try:
+            user = interaction.client.get_user(rec['user']) or await interaction.client.fetch_user(rec['user'])
+            await user.send(f"Your suggestion in **{interaction.guild.name}** was **{('approved ✅' if self.approve else 'denied ❌')}**." + (f'\n{self.reason.value}' if self.reason.value else ''))
+        except discord.HTTPException:
+            pass
+
+class SuggestView(discord.ui.View):
+
+    def __init__(self, up=0, down=0, done=False):
+        super().__init__(timeout=None)
+        self.upvote.label, self.downvote.label = (str(up), str(down))
+        if done:
+            for c in self.children:
+                c.disabled = True
+
+    async def vote(self, interaction, side):
+        rec = data.get('suggestions', {}).get(str(interaction.message.id))
+        if rec is None or rec['status'] != 'open':
+            return await interaction.response.send_message('Voting is closed.', ephemeral=True)
+        mine, other = (rec[side], rec['down' if side == 'up' else 'up'])
+        uid = interaction.user.id
+        if uid in mine:
+            mine.remove(uid)
+        else:
+            mine.append(uid)
+            if uid in other:
+                other.remove(uid)
+        save_data()
+        await interaction.response.edit_message(view=SuggestView(len(rec['up']), len(rec['down'])))
+
+    @discord.ui.button(label='0', emoji='👍', style=discord.ButtonStyle.secondary, custom_id='suggest:up')
+    async def upvote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.vote(interaction, 'up')
+
+    @discord.ui.button(label='0', emoji='👎', style=discord.ButtonStyle.secondary, custom_id='suggest:down')
+    async def downvote(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.vote(interaction, 'down')
+
+    @discord.ui.button(label='Approve', emoji='✅', style=discord.ButtonStyle.success, custom_id='suggest:approve', row=1)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message('Staff only.', ephemeral=True)
+        await interaction.response.send_modal(SuggestDecision(interaction.message, True))
+
+    @discord.ui.button(label='Deny', emoji='❌', style=discord.ButtonStyle.danger, custom_id='suggest:deny', row=1)
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message('Staff only.', ephemeral=True)
+        await interaction.response.send_modal(SuggestDecision(interaction.message, False))
+
+class Welcome(commands.GroupCog, name='welcome'):
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    def cfg(self):
+        return self.bot.data.setdefault('welcome', {'channel': 0, 'message': '', 'role': 0})
+
+    def render(self, member, text):
+        text = text or 'Welcome {user} to **{server}**! You are member **#{count}**. Read the rules and open a ticket if you need help.'
+        return text.replace('{user}', member.mention).replace('{server}', member.guild.name).replace('{count}', str(member.guild.member_count))
+
+    async def greet(self, member):
+        c = self.cfg()
+        ch = member.guild.get_channel(c['channel'])
+        if ch is None:
+            return False
+        e = discord.Embed(title=f'👋 Welcome to {member.guild.name}!', description=self.render(member, c['message']), color=3066993, timestamp=discord.utils.utcnow())
+        e.set_thumbnail(url=member.display_avatar.url)
+        e.set_footer(text=f'Member #{member.guild.member_count}')
+        try:
+            await ch.send(content=member.mention, embed=e, allowed_mentions=discord.AllowedMentions(users=[member]))
+            return True
+        except discord.HTTPException:
+            return False
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        c = self.cfg()
+        if member.bot:
+            return
+        role = member.guild.get_role(c['role']) if c['role'] else None
+        if role:
+            try:
+                await member.add_roles(role, reason='Welcome auto-role')
+            except discord.HTTPException:
+                pass
+        await self.greet(member)
+
+    @app_commands.command(name='setup', description='Set up the welcome message (staff)')
+    @app_commands.describe(channel='Where to welcome new members', message='Use {user} {server} {count}. Leave empty for the default', autorole='Role to give every new member (optional)')
+    @staff_only()
+    async def setup_welcome(self, interaction: discord.Interaction, channel: discord.TextChannel, message: Optional[app_commands.Range[str, 1, 1000]]=None, autorole: Optional[discord.Role]=None):
+        if autorole and (autorole.managed or autorole.is_default() or autorole >= interaction.guild.me.top_role):
+            return await interaction.response.send_message(f"I can't hand out {autorole.mention}. Move my role **above** it in Server Settings → Roles.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        self.cfg().update(channel=channel.id, message=message or '', role=autorole.id if autorole else 0)
+        self.bot.save_data()
+        note = '' if self.bot.intents.members else '\n⚠️ I can only see new members if **Server Members Intent** is on: turn it on in the Developer Portal and add the Railway variable `MEMBERS_INTENT` = `1`.'
+        await interaction.response.send_message(f'✅ Welcome messages will go to {channel.mention}. Try `/welcome test`.{note}', ephemeral=True)
+
+    @app_commands.command(name='test', description='Preview the welcome message with yourself (staff)')
+    @staff_only()
+    async def test(self, interaction: discord.Interaction):
+        if not self.cfg()['channel']:
+            return await interaction.response.send_message('Run `/welcome setup` first.', ephemeral=True)
+        ok = await self.greet(interaction.user)
+        await interaction.response.send_message('✅ Sent a test welcome.' if ok else "❌ I couldn't post in the welcome channel.", ephemeral=True)
+
+    @app_commands.command(name='disable', description='Turn off welcome messages (staff)')
+    @staff_only()
+    async def disable(self, interaction: discord.Interaction):
+        self.cfg().update(channel=0, role=0)
+        self.bot.save_data()
+        await interaction.response.send_message('✅ Welcome messages are off.', ephemeral=True)
+
+class Extras(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.cool = {}
+
+    async def cog_load(self):
+        self.bot.add_view(SuggestView())
+
+    @app_commands.command(name='staffstats', description='Staff activity: tickets and moderation actions (staff)')
+    @app_commands.describe(member='Show one staff member (leave empty for the leaderboard)')
+    @staff_only()
+    async def staffstats(self, interaction: discord.Interaction, member: Optional[discord.Member]=None):
+        table = self.bot.data.get('staffstats', {})
+        if member:
+            s = table.get(str(member.id), {'tickets': 0, 'messages': 0, 'mod': 0})
+            e = discord.Embed(title=f'📊 {member.display_name}', color=discord.Color.blurple())
+            e.set_thumbnail(url=member.display_avatar.url)
+            e.add_field(name='🎫 Tickets helped', value=str(s['tickets']))
+            e.add_field(name='💬 Ticket messages', value=str(s['messages']))
+            e.add_field(name='🔨 Moderation actions', value=str(s['mod']))
+            return await interaction.response.send_message(embed=e, ephemeral=True)
+        rows = sorted(table.items(), key=lambda kv: (kv[1]['tickets'], kv[1]['mod']), reverse=True)[:10]
+        if not rows:
+            return await interaction.response.send_message('No stats yet. They build up as staff close tickets and use moderation commands.', ephemeral=True)
+        medals = ['🥇', '🥈', '🥉']
+        lines = [f"{(medals[n] if n < 3 else f'**{n + 1}.**')} <@{uid}> · 🎫 {s['tickets']} tickets · 💬 {s['messages']} msgs · 🔨 {s['mod']} mod actions" for n, (uid, s) in enumerate(rows)]
+        e = discord.Embed(title='📊 Staff stats', description='\n'.join(lines), color=discord.Color.blurple())
+        e.set_footer(text='Tickets are counted when a ticket is closed.')
+        await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='announce', description='Post an announcement embed (staff)')
+    @app_commands.describe(channel='Where to post it', ping='Role to ping (optional)', everyone='Ping @everyone', color='Embed color', image='Image link (optional)')
+    @app_commands.choices(color=[app_commands.Choice(name=n.title(), value=n) for n in SUGGEST_COLORS])
+    @staff_only()
+    async def announce(self, interaction: discord.Interaction, channel: discord.TextChannel, ping: Optional[discord.Role]=None, everyone: bool=False, color: Optional[app_commands.Choice[str]]=None, image: Optional[str]=None):
+        if image and (not image.startswith(('http://', 'https://'))):
+            return await interaction.response.send_message('The image must be a link starting with https://', ephemeral=True)
+        perms = channel.permissions_for(interaction.guild.me)
+        if not (perms.send_messages and perms.embed_links):
+            return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {channel.mention}.', ephemeral=True)
+        await interaction.response.send_modal(AnnounceModal(channel, ping, everyone, color.value if color else 'gold', image))
+
+    @app_commands.command(name='suggestchannel', description='Choose where suggestions are posted (staff)')
+    @staff_only()
+    async def suggestchannel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        perms = channel.permissions_for(interaction.guild.me)
+        if not (perms.send_messages and perms.embed_links):
+            return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {channel.mention}.', ephemeral=True)
+        self.bot.data.setdefault('suggest', {})['channel'] = channel.id
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Suggestions will be posted in {channel.mention}.', ephemeral=True)
+
+    @app_commands.command(name='suggest', description='Suggest an idea for the server or shop')
+    @app_commands.describe(idea='Your suggestion')
+    async def suggest(self, interaction: discord.Interaction, idea: app_commands.Range[str, 10, 1000]):
+        ch = interaction.guild.get_channel(self.bot.data.get('suggest', {}).get('channel', 0))
+        if ch is None:
+            return await interaction.response.send_message("Suggestions aren't set up yet. Please tell an admin.", ephemeral=True)
+        wait = 60 - (time.time() - self.cool.get(interaction.user.id, 0))
+        if wait > 0 and (not is_staff(interaction.user)):
+            return await interaction.response.send_message(f'Please wait {int(wait)}s before suggesting again.', ephemeral=True)
+        self.cool[interaction.user.id] = time.time()
+        e = discord.Embed(title='💡 New Suggestion', description=idea, color=discord.Color.blurple(), timestamp=discord.utils.utcnow())
+        e.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
+        e.set_footer(text=f'User ID: {interaction.user.id}')
+        try:
+            msg = await ch.send(embed=e, view=SuggestView(), allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            return await interaction.response.send_message("I couldn't post in the suggestions channel.", ephemeral=True)
+        self.bot.data.setdefault('suggestions', {})[str(msg.id)] = {'user': interaction.user.id, 'status': 'open', 'up': [], 'down': []}
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Your suggestion was posted in {ch.mention}. [Jump to it]({msg.jump_url})', ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
