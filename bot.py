@@ -63,6 +63,7 @@ class MyBot(commands.Bot):
         await self.add_cog(Afk(self))
         await self.add_cog(Welcome(self))
         await self.add_cog(Extras(self))
+        await self.add_cog(Sticky(self))
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -683,7 +684,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /afk · /discount · /vouch · /suggest', inline=False)
-    e.add_field(name='◆ Server', value='/welcome · /announce · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Server', value='/welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -2854,4 +2855,110 @@ class Extras(commands.Cog):
         self.bot.data.setdefault('suggestions', {})[str(msg.id)] = {'user': interaction.user.id, 'status': 'open', 'up': [], 'down': []}
         self.bot.save_data()
         await interaction.response.send_message(f'✅ Your suggestion was posted in {ch.mention}. [Jump to it]({msg.jump_url})', ephemeral=True)
+
+class StickyModal(discord.ui.Modal, title='Sticky message'):
+    heading = discord.ui.TextInput(label='Title (optional)', required=False, max_length=100)
+    body = discord.ui.TextInput(label='Message', style=discord.TextStyle.paragraph, max_length=3500)
+
+    def __init__(self, cog, channel):
+        super().__init__()
+        self.cog, self.channel = (cog, channel)
+        old = cog.table().get(str(channel.id))
+        if old:
+            self.heading.default, self.body.default = (old['title'], old['text'])
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        t = self.cog.table()
+        old = t.get(str(self.channel.id))
+        t[str(self.channel.id)] = {'title': self.heading.value or '', 'text': self.body.value, 'last': old['last'] if old else 0}
+        ok = await self.cog.repost(self.channel, delay=0)
+        await interaction.followup.send(f'📌 Sticky set in {self.channel.mention}.' if ok else f"❌ I couldn't post in {self.channel.mention}. I need Send Messages and Embed Links.", ephemeral=True)
+
+class Sticky(commands.GroupCog, name='sticky'):
+    """Keeps a message at the bottom of a channel."""
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+        self.pending = set()
+
+    def table(self):
+        return self.bot.data.setdefault('sticky', {})
+
+    def build(self, rec):
+        e = discord.Embed(title=f"📌 {rec['title']}" if rec['title'] else None, description=rec['text'], color=15844367)
+        e.set_footer(text='Sticky message')
+        return e
+
+    async def repost(self, channel, delay=3):
+        rec = self.table().get(str(channel.id))
+        if rec is None:
+            return False
+        if delay:
+            await asyncio.sleep(delay)
+            rec = self.table().get(str(channel.id))
+            if rec is None:
+                return False
+        if rec['last']:
+            try:
+                await channel.get_partial_message(rec['last']).delete()
+            except discord.HTTPException:
+                pass
+        try:
+            msg = await channel.send(embed=self.build(rec), allowed_mentions=discord.AllowedMentions.none())
+        except discord.HTTPException:
+            return False
+        rec['last'] = msg.id
+        self.bot.save_data()
+        return True
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.guild is None or str(message.channel.id) not in self.table() or message.author.id == self.bot.user.id:
+            return
+        if not isinstance(message.channel, discord.TextChannel) or message.channel.id in self.pending:
+            return
+        self.pending.add(message.channel.id)
+        try:
+            await self.repost(message.channel)
+        finally:
+            self.pending.discard(message.channel.id)
+
+    @app_commands.command(name='set', description='Set a sticky message that stays at the bottom of a channel (staff)')
+    @app_commands.describe(channel='Channel (default: this one)')
+    @staff_only()
+    async def set_sticky(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel]=None):
+        ch = channel or interaction.channel
+        if not isinstance(ch, discord.TextChannel):
+            return await interaction.response.send_message('Use this in a normal text channel.', ephemeral=True)
+        perms = ch.permissions_for(interaction.guild.me)
+        if not (perms.send_messages and perms.embed_links):
+            return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {ch.mention}.', ephemeral=True)
+        await interaction.response.send_modal(StickyModal(self, ch))
+
+    @app_commands.command(name='remove', description='Remove the sticky message from a channel (staff)')
+    @app_commands.describe(channel='Channel (default: this one)')
+    @staff_only()
+    async def remove(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel]=None):
+        ch = channel or interaction.channel
+        rec = self.table().pop(str(ch.id), None)
+        if rec is None:
+            return await interaction.response.send_message('That channel has no sticky message.', ephemeral=True)
+        self.bot.save_data()
+        if rec['last'] and isinstance(ch, discord.TextChannel):
+            try:
+                await ch.get_partial_message(rec['last']).delete()
+            except discord.HTTPException:
+                pass
+        await interaction.response.send_message(f'✅ Sticky removed from {ch.mention}.', ephemeral=True)
+
+    @app_commands.command(name='list', description='Show every channel that has a sticky message (staff)')
+    @staff_only()
+    async def list_sticky(self, interaction: discord.Interaction):
+        t = self.table()
+        if not t:
+            return await interaction.response.send_message('No sticky messages yet. Use `/sticky set`.', ephemeral=True)
+        lines = [f"<#{cid}> · {(r['title'] or r['text'])[:60]}" for cid, r in t.items()]
+        await interaction.response.send_message(embed=discord.Embed(title='📌 Sticky messages', description='\n'.join(lines)[:3900], color=15844367), ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
