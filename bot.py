@@ -1764,6 +1764,7 @@ class TicketAI(commands.GroupCog, name='ai'):
         c = self.bot.data.setdefault('ai', {})
         c.setdefault('enabled', True)
         c.setdefault('info', '')
+        c.setdefault('test', False)
         return c
 
     @app_commands.command(name='enable', description='Turn the ticket AI on (staff)')
@@ -1785,6 +1786,18 @@ class TicketAI(commands.GroupCog, name='ai'):
     async def setinfo(self, interaction: discord.Interaction):
         await interaction.response.send_modal(InfoModal(self))
 
+    @app_commands.command(name='test', description='Test mode: the AI answers staff in tickets you open yourself (staff)')
+    @app_commands.choices(state=[app_commands.Choice(name='On', value='on'), app_commands.Choice(name='Off', value='off')])
+    @staff_only()
+    async def test(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
+        self.cfg()['test'] = state.value == 'on'
+        self.bot.save_data()
+        if state.value == 'on':
+            msg = '🧪 Test mode is **ON**. Open a new ticket from the panel and write in it. The AI will answer you even though you are staff. Turn it **Off** when you are done testing.'
+        else:
+            msg = '🧪 Test mode is **OFF**. The AI ignores staff again.'
+        await interaction.response.send_message(msg, ephemeral=True)
+
     @app_commands.command(name='status', description='Check the ticket AI setup (staff)')
     @staff_only()
     async def status(self, interaction: discord.Interaction):
@@ -1794,6 +1807,7 @@ class TicketAI(commands.GroupCog, name='ai'):
         e.add_field(name='Groq key', value='✅ set' if GROQ_KEY else '❌ missing (GROQ_API_KEY)')
         e.add_field(name='Message Content Intent', value='✅ on' if self.bot.intents.message_content else '❌ off (MESSAGE_CONTENT=1)')
         e.add_field(name='Shop info', value=f"{len(c['info'])} characters" if c['info'] else '❌ empty. Use /ai setinfo', inline=False)
+        e.add_field(name='Test mode', value='🧪 ON' if c['test'] else 'off')
         e.add_field(name='Model', value=GROQ_MODEL, inline=False)
         e.set_footer(text='The AI only answers the ticket opener, and stops once a staff member replies.')
         await interaction.response.send_message(embed=e, ephemeral=True)
@@ -1819,7 +1833,7 @@ class TicketAI(commands.GroupCog, name='ai'):
         c = self.cfg()
         if not c['enabled'] or str(message.author.id) != ch.topic:
             return
-        if is_staff(message.author):
+        if is_staff(message.author) and (not c['test']):
             return
         lock = self.locks.setdefault(ch.id, asyncio.Lock())
         if lock.locked() or time.monotonic() - self.last.get(ch.id, -999) < 4:
@@ -1829,7 +1843,7 @@ class TicketAI(commands.GroupCog, name='ai'):
                 history = [m async for m in ch.history(limit=30)]
             except discord.HTTPException:
                 return
-            if any((not m.author.bot and is_staff(m.author) for m in history)):
+            if not c['test'] and any((not m.author.bot and is_staff(m.author) for m in history)):
                 return
             msgs = [{'role': 'system', 'content': AI_RULES + '\n\nSHOP INFO:\n' + (c['info'] or AI_DEFAULT_INFO)}]
             for m in reversed(history[:12]):
