@@ -1814,14 +1814,20 @@ class TicketAI(commands.GroupCog, name='ai'):
 
     async def ask(self, messages):
         import aiohttp
-        headers = {'Authorization': f'Bearer {GROQ_KEY}', 'Content-Type': 'application/json'}
-        body = {'model': GROQ_MODEL, 'messages': messages, 'max_tokens': 400, 'temperature': 0.3}
+        headers = {'Authorization': f'Bearer {GROQ_KEY.strip()}', 'Content-Type': 'application/json', 'User-Agent': 'FrontlineBot/1.0', 'Accept': 'application/json'}
+        last = ''
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
-            async with s.post(AI_URL, headers=headers, json=body) as r:
-                if r.status != 200:
-                    raise RuntimeError(f'Groq error {r.status}: {(await r.text())[:200]}')
-                j = await r.json()
-        return j['choices'][0]['message']['content'].strip()
+            for model in dict.fromkeys([GROQ_MODEL, 'llama-3.1-8b-instant']):
+                body = {'model': model, 'messages': messages, 'max_tokens': 400, 'temperature': 0.3}
+                async with s.post(AI_URL, headers=headers, json=body) as r:
+                    if r.status == 200:
+                        j = await r.json()
+                        return j['choices'][0]['message']['content'].strip()
+                    last = f'Groq error {r.status} (model {model}): {(await r.text())[:300]}'
+                    print(f'[AI] {last}')
+                    if r.status in (401, 403, 429):
+                        break
+        raise RuntimeError(last)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -1859,7 +1865,9 @@ class TicketAI(commands.GroupCog, name='ai'):
                 async with ch.typing():
                     reply = await self.ask(msgs)
             except Exception as ex:
-                print(f'[AI] {ex}')
+                print(f'[AI] {ex!r}')
+                if c['test']:
+                    await ch.send(f'🧪 AI error: `{str(ex)[:300]}`', allowed_mentions=discord.AllowedMentions.none())
                 return
             self.last[ch.id] = time.monotonic()
             escalate = '[ESCALATE]' in reply
