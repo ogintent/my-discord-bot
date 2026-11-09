@@ -20,6 +20,7 @@ BUSINESS_NAME = 'Frontline'
 VOUCH_COOLDOWN_SECONDS = 30
 intents = discord.Intents.default()
 intents.message_content = os.getenv('MESSAGE_CONTENT') == '1'
+intents.members = os.getenv('MEMBERS_INTENT') == '1'
 PANEL_TITLE = '◆ Frontline Support'
 PANEL_LINES = ['TO PURCHASE MANUALLY, PRESS PURCHASE.', 'DO NOT ASK TO ASK. SIMPLY ASK YOUR QUESTION.', 'FOR MEDIA APPLICATIONS. PRESS "MEDIA" BUTTON.', 'FOR AUTOMATIC DELIVERY, USE THE WEBSITE.']
 PAYMENT_METHODS = ['💰 CRYPTO CURRENCIES', '💰 PAYPAL (FAMILY & FRIENDS) (MUST PAY ON DISCORD)', '💰 CASHAPP', '💰 CREDIT CARDS (MUST PAY ON DISCORD)', '💰 ZELLE (MUST PAY ON DISCORD)', '💰 VENMO (MUST PAY ON DISCORD)']
@@ -55,6 +56,10 @@ class MyBot(commands.Bot):
         await self.add_cog(StaffApps(self))
         await self.add_cog(Community(self))
         await self.add_cog(TicketAI(self))
+        await self.add_cog(NickFilter(self))
+        await self.add_cog(Censor(self))
+        await self.add_cog(IPBlock(self))
+        await self.add_cog(Tools(self))
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -261,6 +266,11 @@ class CloseView(discord.ui.View):
             return await interaction.response.send_message('Not allowed.', ephemeral=True)
         await interaction.response.send_message('Closing in 5 seconds, saving transcript...')
         text = await build_transcript(channel)
+        ai = bot.get_cog('ai')
+        if ai and ai.cfg()['learn'] and GROQ_KEY and channel.topic and channel.topic.isdigit():
+            convo = await ai.collect(channel)
+            if convo:
+                asyncio.create_task(ai.learn(convo, interaction.guild))
         log = bot.get_channel(LOG_CHANNEL_ID)
         await log.send(f'Transcript for **{channel.name}**', file=transcript_file(text, channel.name))
         owner = await get_owner(interaction.guild, channel)
@@ -475,11 +485,11 @@ async def kick(interaction: discord.Interaction, member: discord.Member, reason:
 
 @bot.tree.command(name='ban', description='Ban a member')
 @app_commands.checks.has_permissions(ban_members=True)
-async def ban(interaction: discord.Interaction, member: discord.Member, reason: str='No reason given'):
+async def ban(interaction: discord.Interaction, member: discord.Member, reason: str='No reason given', days: app_commands.Range[int, 0, 7]=0):
     if not await check_target(interaction, member):
         return
-    await member.ban(reason=f'{interaction.user}: {reason}')
-    await interaction.response.send_message(f'🔨 Banned **{member}** — {reason}')
+    await member.ban(reason=f'{interaction.user}: {reason}', delete_message_seconds=days * 86400)
+    await interaction.response.send_message(f'🔨 Banned **{member}** — {reason}' + (f' (deleted {days} day(s) of messages)' if days else ''))
     await mod_log(interaction.guild, '🔨 Member banned', interaction.user, member, reason, discord.Color.red())
 
 @bot.tree.command(name='idban', description="Ban a user by ID, even if they're not in the server")
@@ -662,7 +672,8 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Vouches', value='/vouch · /vouchstats', inline=False)
     e.add_field(name='◆ Moderation', value='/kick · /ban · /idban · /softban · /unban · /timeout · /untimeout · /warn · /warnings · /delwarn · /clearwarnings · /nick · /addrole · /removerole · /purge · /slowmode · /lock · /unlock', inline=False)
     e.add_field(name='◆ Server', value='/website · /setwebsite · /setimage · /embed · /ticketpanel · /say (staff)', inline=False)
-    e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner)', inline=False)
+    e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner) · /filter · /censor · /ipblock', inline=False)
+    e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
@@ -1751,6 +1762,9 @@ class InfoModal(discord.ui.Modal, title='AI shop info'):
         self.cog.cfg()['info'] = self.info.value
         self.cog.bot.save_data()
         await interaction.response.send_message('✅ Saved. The AI will use this in tickets from now on.', ephemeral=True)
+        tools = self.cog.bot.get_cog('Tools')
+        if tools and self.cog.bot.data.get('faq'):
+            asyncio.create_task(tools.refresh_faq(interaction.guild))
 
 class TicketAI(commands.GroupCog, name='ai'):
 
@@ -1768,6 +1782,8 @@ class TicketAI(commands.GroupCog, name='ai'):
         c.setdefault('enabled', True)
         c.setdefault('info', '')
         c.setdefault('test', False)
+        c.setdefault('learn', True)
+        c.setdefault('learned', [])
         return c
 
     @app_commands.command(name='enable', description='Turn the ticket AI on (staff)')
@@ -1811,9 +1827,99 @@ class TicketAI(commands.GroupCog, name='ai'):
         e.add_field(name='Message Content Intent', value='✅ on' if self.bot.intents.message_content else '❌ off (MESSAGE_CONTENT=1)')
         e.add_field(name='Shop info', value=f"{len(c['info'])} characters" if c['info'] else '❌ empty. Use /ai setinfo', inline=False)
         e.add_field(name='Test mode', value='🧪 ON' if c['test'] else 'off')
-        e.add_field(name='Model', value=GROQ_MODEL + (f" → {self.model}" if self.model else ''), inline=False)
+        e.add_field(name='Learning', value=('🧠 ON' if c['learn'] else 'off') + f" ({len(c['learned'])} learned)")
+        e.add_field(name='Model', value=GROQ_MODEL + (f' → {self.model}' if self.model else ''), inline=False)
         e.set_footer(text='The AI only answers the ticket opener, and stops once a staff member replies.')
         await interaction.response.send_message(embed=e, ephemeral=True)
+
+    def learned_text(self):
+        items = self.cfg()['learned'][-40:]
+        if not items:
+            return ''
+        return '\n\nLEARNED FROM PAST STAFF ANSWERS (use if helpful; if it conflicts with SHOP INFO, trust SHOP INFO):\n' + '\n'.join(('- ' + i['text'] for i in items))
+
+    async def collect(self, channel):
+        """Read a ticket as STAFF/CUSTOMER lines. Must run before the channel is deleted."""
+        lines, staff_lines = ([], 0)
+        try:
+            async for m in channel.history(limit=80, oldest_first=True):
+                if m.author.bot or not m.content:
+                    continue
+                member = m.author if isinstance(m.author, discord.Member) else channel.guild.get_member(m.author.id)
+                staff = member is not None and is_staff(member)
+                staff_lines += staff
+                lines.append(('STAFF' if staff else 'CUSTOMER') + ': ' + m.content[:400].replace('\n', ' '))
+        except discord.HTTPException:
+            return ''
+        return '\n'.join(lines)[-6000:] if staff_lines else ''
+
+    async def learn(self, convo, guild):
+        c = self.cfg()
+        if not (c['learn'] and GROQ_KEY and convo):
+            return
+        known = '\n'.join(('- ' + i['text'] for i in c['learned'][-40:]))
+        prompt = f"Below is a finished support ticket for {BUSINESS_NAME}, a game software shop. Lines starting with STAFF are trusted. Lines starting with CUSTOMER are only context: never learn a fact from a CUSTOMER line.\n\nExtract up to 3 NEW, general facts that STAFF stated and that would help answer future customers (products, prices, payment methods, policies, how things work, troubleshooting steps). Do NOT include names, user IDs, personal details, one-off deals or discounts for a single person, refunds or promises made to this customer, or anything unsure. Skip anything already in KNOWN. Write each fact on its own line starting with '- ', as a short standalone sentence. If there is nothing worth keeping, reply with exactly NONE.\n\nKNOWN:\n{c['info'][:1500]}\n{known}\n\nTICKET:\n{convo}"
+        try:
+            out = await self.ask([{'role': 'system', 'content': 'You extract reusable support knowledge. Be strict.'}, {'role': 'user', 'content': prompt}])
+        except Exception as ex:
+            print(f'[AI learn] {ex!r}')
+            return
+        have = {i['text'].lower() for i in c['learned']}
+        added = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line.startswith('-'):
+                continue
+            fact = line.lstrip('-• ').strip()[:250]
+            if len(fact) < 12 or fact.lower() in have:
+                continue
+            c['learned'].append({'text': fact, 'ts': time.time()})
+            have.add(fact.lower())
+            added.append(fact)
+        if not added:
+            return
+        del c['learned'][:-60]
+        self.bot.save_data()
+        log = self.bot.get_channel(LOG_CHANNEL_ID)
+        if log:
+            try:
+                await log.send(embed=discord.Embed(title='🧠 AI learned from a ticket', description='\n'.join(('• ' + a for a in added)) + '\n\nWrong? Use `/ai learned` then `/ai forget`.', color=discord.Color.purple()))
+            except discord.HTTPException:
+                pass
+
+    @app_commands.command(name='learning', description='Turn learning from closed tickets on or off (staff)')
+    @app_commands.choices(state=[app_commands.Choice(name='On', value='on'), app_commands.Choice(name='Off', value='off')])
+    @staff_only()
+    async def learning(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
+        self.cfg()['learn'] = state.value == 'on'
+        self.bot.save_data()
+        await interaction.response.send_message(f"🧠 Learning from tickets is **{state.name.upper()}**.", ephemeral=True)
+
+    @app_commands.command(name='learned', description='See what the AI has learned from tickets (staff)')
+    @staff_only()
+    async def learned(self, interaction: discord.Interaction):
+        items = self.cfg()['learned']
+        if not items:
+            return await interaction.response.send_message('Nothing learned yet. It learns from what staff say in tickets when they close.', ephemeral=True)
+        text = '\n'.join((f"**{n}.** {i['text']}" for n, i in enumerate(items, 1)))
+        await interaction.response.send_message(embed=discord.Embed(title=f'🧠 Learned ({len(items)})', description=text[:3900], color=discord.Color.purple()), ephemeral=True)
+
+    @app_commands.command(name='forget', description='Delete one thing the AI learned, by its number (staff)')
+    @staff_only()
+    async def forget(self, interaction: discord.Interaction, number: int):
+        items = self.cfg()['learned']
+        if not 1 <= number <= len(items):
+            return await interaction.response.send_message('No item with that number. Check `/ai learned`.', ephemeral=True)
+        gone = items.pop(number - 1)
+        self.bot.save_data()
+        await interaction.response.send_message(f"🗑️ Forgot: {gone['text']}", ephemeral=True)
+
+    @app_commands.command(name='forgetall', description='Delete everything the AI learned from tickets (staff)')
+    @staff_only()
+    async def forgetall(self, interaction: discord.Interaction):
+        self.cfg()['learned'] = []
+        self.bot.save_data()
+        await interaction.response.send_message('🗑️ Cleared everything it learned. Your shop info is untouched.', ephemeral=True)
 
     async def ask(self, messages):
         import aiohttp
@@ -1880,7 +1986,7 @@ class TicketAI(commands.GroupCog, name='ai'):
                 return
             if not c['test'] and any((not m.author.bot and is_staff(m.author) for m in history)):
                 return
-            msgs = [{'role': 'system', 'content': AI_RULES + '\n\nSHOP INFO:\n' + (c['info'] or AI_DEFAULT_INFO)}]
+            msgs = [{'role': 'system', 'content': AI_RULES + '\n\nSHOP INFO:\n' + (c['info'] or AI_DEFAULT_INFO) + self.learned_text()}]
             for m in reversed(history[:12]):
                 if not m.content:
                     continue
@@ -1906,4 +2012,520 @@ class TicketAI(commands.GroupCog, name='ai'):
             if escalate and ch.id not in self.escalated:
                 self.escalated.add(ch.id)
                 await ch.send(f'<@&{STAFF_ROLE_ID}> a customer needs a human here.', allowed_mentions=discord.AllowedMentions(roles=True))
+import ipaddress, sys, difflib
+try:
+    import resource
+except ImportError:
+    resource = None
+BOOT = time.time()
+LEET = str.maketrans({'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's', '!': 'i'})
+ZW = dict.fromkeys(map(ord, '\u200b\u200c\u200d\u2060\ufeff'))
+
+def clean_text(text):
+    return text.lower().translate(ZW).translate(LEET)
+
+def collapse(text):
+    return re.sub('[^a-z0-9]', '', clean_text(text))
+
+def admin_only():
+    return app_commands.checks.has_permissions(administrator=True)
+
+def ago(ts):
+    return f'<t:{int(ts)}:R>'
+
+class NickFilter(commands.GroupCog, name='filter'):
+    """Blocks bad words in nicknames and usernames."""
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    def cfg(self):
+        c = self.bot.data.setdefault('filter', {})
+        c.setdefault('words', [])
+        c.setdefault('replacement', 'Moderated Nickname')
+        return c
+
+    def bad(self, name):
+        flat = collapse(name)
+        return any((w and w in flat for w in self.cfg()['words']))
+
+    async def fix(self, member):
+        if member.bot or member.id == member.guild.owner_id or member.top_role >= member.guild.me.top_role or is_staff(member):
+            return False
+        if not self.bad(member.display_name) and (not self.bad(member.name)):
+            return False
+        try:
+            await member.edit(nick=self.cfg()['replacement'][:32], reason='Nickname filter')
+            return True
+        except discord.HTTPException:
+            return False
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        if self.cfg()['words']:
+            await self.fix(member)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before, after):
+        if self.cfg()['words'] and before.display_name != after.display_name:
+            await self.fix(after)
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.guild is not None and isinstance(message.author, discord.Member) and self.cfg()['words']:
+            await self.fix(message.author)
+
+    @app_commands.command(name='add', description='Block a word in nicknames and usernames (staff)')
+    @staff_only()
+    async def add(self, interaction: discord.Interaction, word: str):
+        w = collapse(word)
+        c = self.cfg()
+        if len(w) < 3:
+            return await interaction.response.send_message('Use a word with at least 3 letters or numbers.', ephemeral=True)
+        if w in c['words']:
+            return await interaction.response.send_message('That word is already blocked.', ephemeral=True)
+        if len(c['words']) >= 200:
+            return await interaction.response.send_message('You have reached the 200 word limit.', ephemeral=True)
+        c['words'].append(w)
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Added. Nicknames containing **{w}** will be replaced. Use `/filter apply` to fix existing members.', ephemeral=True)
+
+    @app_commands.command(name='remove', description='Unblock a nickname word (staff)')
+    @staff_only()
+    async def remove(self, interaction: discord.Interaction, word: str):
+        w, c = (collapse(word), self.cfg())
+        if w not in c['words']:
+            return await interaction.response.send_message("That word isn't in the list.", ephemeral=True)
+        c['words'].remove(w)
+        self.bot.save_data()
+        await interaction.response.send_message('✅ Removed.', ephemeral=True)
+
+    @app_commands.command(name='list', description='Show blocked nickname words (staff)')
+    @staff_only()
+    async def list_words(self, interaction: discord.Interaction):
+        c = self.cfg()
+        e = discord.Embed(title='🔤 Nickname filter', color=discord.Color.blurple())
+        e.add_field(name='Blocked words', value=', '.join((f'`{w}`' for w in c['words']))[:1000] or 'None yet. Use `/filter add`.', inline=False)
+        e.add_field(name='Replacement nickname', value=c['replacement'])
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @app_commands.command(name='setreplacement', description='Set the nickname given to people who break the filter (staff)')
+    @staff_only()
+    async def setreplacement(self, interaction: discord.Interaction, nickname: app_commands.Range[str, 1, 32]):
+        self.cfg()['replacement'] = nickname
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Replacement nickname is now **{nickname}**.', ephemeral=True)
+
+    @app_commands.command(name='apply', description='Scan members now and rename anyone who breaks the filter (staff)')
+    @staff_only()
+    async def apply(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        members = list(interaction.guild.members)
+        fixed = 0
+        for m in members:
+            if await self.fix(m):
+                fixed += 1
+        note = '' if self.bot.intents.members else '\n⚠️ I can only scan members I have seen. Set `MEMBERS_INTENT=1` (and turn on Server Members Intent in the Developer Portal) to scan everyone.'
+        await interaction.followup.send(f'✅ Scanned {len(members)} members, renamed **{fixed}**.{note}', ephemeral=True)
+
+class Censor(commands.GroupCog, name='censor'):
+    """Deletes messages that contain blocked words."""
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    def cfg(self):
+        c = self.bot.data.setdefault('censor', {})
+        c.setdefault('words', [])
+        c.setdefault('bypass', [])
+        c.setdefault('punishment', 'delete')
+        return c
+
+    @app_commands.command(name='add', description='Block a word or phrase in messages (staff)')
+    @staff_only()
+    async def add(self, interaction: discord.Interaction, word: app_commands.Range[str, 2, 50]):
+        c, w = (self.cfg(), clean_text(word).strip())
+        if w in c['words']:
+            return await interaction.response.send_message('That word is already blocked.', ephemeral=True)
+        if len(c['words']) >= 300:
+            return await interaction.response.send_message('You have reached the 300 word limit.', ephemeral=True)
+        c['words'].append(w)
+        self.bot.save_data()
+        note = '' if self.bot.intents.message_content else "\n⚠️ Message Content Intent is off, so I can't read messages yet (`MESSAGE_CONTENT=1`)."
+        await interaction.response.send_message(f'✅ Blocked: `{w}`{note}', ephemeral=True)
+
+    @app_commands.command(name='remove', description='Unblock a word (staff)')
+    @staff_only()
+    async def remove(self, interaction: discord.Interaction, word: str):
+        c, w = (self.cfg(), clean_text(word).strip())
+        if w not in c['words']:
+            return await interaction.response.send_message("That word isn't in the list.", ephemeral=True)
+        c['words'].remove(w)
+        self.bot.save_data()
+        await interaction.response.send_message('✅ Removed.', ephemeral=True)
+
+    @app_commands.command(name='list', description='Show blocked words, bypass roles and punishment (staff)')
+    @staff_only()
+    async def list_words(self, interaction: discord.Interaction):
+        c = self.cfg()
+        e = discord.Embed(title='🚫 Blocked words', color=discord.Color.red())
+        e.add_field(name='Words', value=', '.join((f'`{w}`' for w in c['words']))[:1000] or 'None yet. Use `/censor add`.', inline=False)
+        e.add_field(name='Punishment', value=c['punishment'].title())
+        e.add_field(name='Bypass roles', value=' '.join((f'<@&{r}>' for r in c['bypass'])) or 'None (staff always bypass)')
+        await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='bypass', description='Let a role ignore the word filter (run again to remove) (staff)')
+    @staff_only()
+    async def bypass(self, interaction: discord.Interaction, role: discord.Role):
+        c = self.cfg()
+        if role.id in c['bypass']:
+            c['bypass'].remove(role.id)
+            msg = f'✅ {role.mention} no longer bypasses the filter.'
+        else:
+            c['bypass'].append(role.id)
+            msg = f'✅ {role.mention} now bypasses the filter.'
+        self.bot.save_data()
+        await interaction.response.send_message(msg, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='punishment', description='What happens when someone uses a blocked word (staff)')
+    @app_commands.choices(action=[app_commands.Choice(name='Just delete the message', value='delete'), app_commands.Choice(name='Delete and warn', value='warn'), app_commands.Choice(name='Delete and time out 5 minutes', value='timeout')])
+    @staff_only()
+    async def punishment(self, interaction: discord.Interaction, action: app_commands.Choice[str]):
+        self.cfg()['punishment'] = action.value
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Punishment: **{action.name}**.', ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        c = self.cfg()
+        if not c['words'] or message.guild is None or message.author.bot or (not message.content):
+            return
+        m = message.author
+        if not isinstance(m, discord.Member) or is_staff(m) or any((r.id in c['bypass'] for r in m.roles)):
+            return
+        text = clean_text(message.content)
+        hit = next((w for w in c['words'] if re.search('(?<![a-z0-9])' + re.escape(w) + '(?![a-z0-9])', text)), None)
+        if hit is None:
+            return
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            return
+        extra = ''
+        if c['punishment'] == 'warn':
+            self.bot.data['warnings'].setdefault(str(m.id), []).append({'reason': 'Used a blocked word', 'mod': 'Auto-censor', 'time': discord.utils.utcnow().strftime('%Y-%m-%d')})
+            self.bot.save_data()
+            extra = ' and warned'
+        elif c['punishment'] == 'timeout':
+            try:
+                await m.timeout(timedelta(minutes=5), reason='Censor: blocked word')
+                extra = ' and timed out for 5 minutes'
+            except discord.HTTPException:
+                pass
+        try:
+            await message.channel.send(f'🚫 {m.mention}, your message was removed{extra} for a blocked word.', delete_after=8, allowed_mentions=discord.AllowedMentions(users=[m]))
+        except discord.HTTPException:
+            pass
+        await self.bot.mod_log(message.guild, '🚫 Censor', message.guild.me, m, f'Blocked word `{hit}` in {message.channel.mention}{extra}')
+
+class IPBlock(commands.GroupCog, name='ipblock'):
+    """A private list of customer IP addresses your team has flagged."""
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    def cfg(self):
+        return self.bot.data.setdefault('ipblock', {})
+
+    @staticmethod
+    def parse(text):
+        try:
+            return ipaddress.ip_network(text.strip(), strict=False)
+        except ValueError:
+            return None
+
+    def find(self, net):
+        c = self.cfg()
+        for key, info in c.items():
+            other = ipaddress.ip_network(key)
+            if other.version == net.version and (net.subnet_of(other) or other.subnet_of(net)):
+                return (key, info)
+        return None
+
+    @app_commands.command(name='block', description='Add an IP or range (like 1.2.3.0/24) to the block list (staff)')
+    @staff_only()
+    async def block(self, interaction: discord.Interaction, ip: str, reason: app_commands.Range[str, 1, 200]='No reason given'):
+        net = self.parse(ip)
+        if net is None:
+            return await interaction.response.send_message("That isn't a valid IP address or range.", ephemeral=True)
+        if self.find(net) and str(net) in self.cfg():
+            return await interaction.response.send_message('That IP is already blocked.', ephemeral=True)
+        self.cfg()[str(net)] = {'reason': reason, 'by': interaction.user.id, 'ts': time.time()}
+        self.bot.save_data()
+        await interaction.response.send_message(f'🚫 Blocked `{net}`.', ephemeral=True)
+        await self.bot.mod_log(interaction.guild, '🚫 IP blocked', interaction.user, f'`{net}`', reason, discord.Color.red())
+
+    @app_commands.command(name='unblock', description='Remove an IP or range from the block list (staff)')
+    @staff_only()
+    async def unblock(self, interaction: discord.Interaction, ip: str):
+        net = self.parse(ip)
+        if net is None or str(net) not in self.cfg():
+            return await interaction.response.send_message("That IP isn't on the list.", ephemeral=True)
+        del self.cfg()[str(net)]
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Unblocked `{net}`.', ephemeral=True)
+
+    @app_commands.command(name='list', description='Show all blocked IPs (staff)')
+    @staff_only()
+    async def list_ips(self, interaction: discord.Interaction):
+        c = self.cfg()
+        if not c:
+            return await interaction.response.send_message('No IPs are blocked.', ephemeral=True)
+        lines = [f"`{k}` · {v['reason'][:60]}" for k, v in c.items()]
+        text = '\n'.join(lines)
+        if len(text) > 3900:
+            text = text[:3900] + '\n…'
+        await interaction.response.send_message(embed=discord.Embed(title=f'🚫 Blocked IPs ({len(c)})', description=text, color=discord.Color.red()), ephemeral=True)
+
+    @app_commands.command(name='lookup', description='Check if an IP is on the block list (staff)')
+    @staff_only()
+    async def lookup(self, interaction: discord.Interaction, ip: str):
+        net = self.parse(ip)
+        if net is None:
+            return await interaction.response.send_message("That isn't a valid IP address or range.", ephemeral=True)
+        hit = self.find(net)
+        if not hit:
+            return await interaction.response.send_message(f'✅ `{net}` is **not** blocked.', ephemeral=True)
+        key, info = hit
+        await interaction.response.send_message(f"🚫 `{net}` matches blocked `{key}`\n**Reason:** {info['reason']}\n**Added by:** <@{info['by']}> {ago(info['ts'])}", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='recent', description='Show the most recently blocked IPs (staff)')
+    @staff_only()
+    async def recent(self, interaction: discord.Interaction):
+        rows = sorted(self.cfg().items(), key=lambda kv: kv[1]['ts'], reverse=True)[:10]
+        if not rows:
+            return await interaction.response.send_message('No IPs are blocked.', ephemeral=True)
+        text = '\n'.join((f"`{k}` · {ago(v['ts'])} · <@{v['by']}> · {v['reason'][:50]}" for k, v in rows))
+        await interaction.response.send_message(embed=discord.Embed(title='🕒 Recently blocked IPs', description=text, color=discord.Color.red()), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+class Tools(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(name='whois', description='Detailed account and server info about a user (staff)')
+    @staff_only()
+    async def whois(self, interaction: discord.Interaction, user: discord.User):
+        guild = interaction.guild
+        member = guild.get_member(user.id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user.id)
+            except discord.HTTPException:
+                member = None
+        e = discord.Embed(title=f'🔎 {user}', color=member.color if member and member.color.value else discord.Color.blurple())
+        e.set_thumbnail(url=user.display_avatar.url)
+        e.add_field(name='ID', value=f'`{user.id}`')
+        e.add_field(name='Mention', value=user.mention)
+        e.add_field(name='Bot', value='Yes' if user.bot else 'No')
+        age_days = (discord.utils.utcnow() - user.created_at).days
+        e.add_field(name='Account created', value=f'<t:{int(user.created_at.timestamp())}:F>\n{ago(user.created_at.timestamp())}' + (' ⚠️ **new account**' if age_days < 30 else ''), inline=False)
+        if member:
+            if member.joined_at:
+                e.add_field(name='Joined server', value=f'<t:{int(member.joined_at.timestamp())}:F>\n{ago(member.joined_at.timestamp())}', inline=False)
+            roles = [r.mention for r in reversed(member.roles) if not r.is_default()]
+            e.add_field(name=f'Roles ({len(roles)})', value=' '.join(roles[:15])[:1000] or 'None', inline=False)
+            flags = []
+            if member.premium_since:
+                flags.append('💎 Booster')
+            if member.is_timed_out():
+                flags.append('⏳ Timed out')
+            if member.guild_permissions.administrator:
+                flags.append('👑 Administrator')
+            if is_staff(member):
+                flags.append('🛡️ Staff')
+            if member.nick:
+                flags.append(f'Nickname: {member.nick}')
+            if flags:
+                e.add_field(name='Status', value='\n'.join(flags), inline=False)
+        else:
+            e.add_field(name='In server', value='No', inline=False)
+        warns = self.bot.data.get('warnings', {}).get(str(user.id), [])
+        e.add_field(name='Warnings', value=str(len(warns)))
+        try:
+            await guild.fetch_ban(user)
+            e.add_field(name='Ban', value='🔨 Banned')
+        except discord.HTTPException:
+            pass
+        await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='altcheck', description='Check a member for likely alt accounts (staff)')
+    @staff_only()
+    async def altcheck(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True)
+        t = member
+        notes, rows = ([], [])
+        age = (discord.utils.utcnow() - t.created_at).days
+        if age < 7:
+            notes.append(f'Account is only {age} day(s) old')
+        if t.avatar is None:
+            notes.append('Uses a default avatar')
+        for o in t.guild.members:
+            if o.id == t.id or o.bot:
+                continue
+            score, why = (0, [])
+            if abs((o.created_at - t.created_at).total_seconds()) < 172800:
+                score += 2
+                why.append('created within 2 days')
+            if o.joined_at and t.joined_at and (abs((o.joined_at - t.joined_at).total_seconds()) < 900):
+                score += 2
+                why.append('joined within 15 min')
+            sim = max((difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio() for a in (o.name, o.display_name) for b in (t.name, t.display_name)))
+            if sim >= 0.75:
+                score += 2
+                why.append(f'similar name ({int(sim * 100)}%)')
+            if o.avatar is not None and t.avatar is not None and (o.avatar.key == t.avatar.key):
+                score += 3
+                why.append('same avatar')
+            if score >= 3:
+                rows.append((score, o, why))
+        rows.sort(key=lambda r: -r[0])
+        e = discord.Embed(title=f'🕵️ Alt check: {t}', color=discord.Color.orange() if rows else discord.Color.green())
+        e.set_thumbnail(url=t.display_avatar.url)
+        e.add_field(name='About this account', value='\n'.join(('• ' + n for n in notes)) or 'Nothing unusual', inline=False)
+        e.add_field(name='Possible alts', value='\n'.join((f"{('🔴' if s >= 5 else '🟡')} {o.mention} · {', '.join(w)}" for s, o, w in rows[:8])) or 'No likely alts found.', inline=False)
+        e.set_footer(text='Just a guess from account age, join time, names and avatars. It is not proof.' + ('' if self.bot.intents.members else ' Only members I have seen are checked (set MEMBERS_INTENT=1).'))
+        await interaction.followup.send(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='bothealth', description='Live health check of the bot (admin)')
+    @admin_only()
+    async def bothealth(self, interaction: discord.Interaction):
+        b, g = (self.bot, interaction.guild)
+        up = int(time.time() - BOOT)
+        folder = os.path.dirname(os.path.abspath(DATA_FILE))
+        ai = b.get_cog('ai')
+        perms = g.me.guild_permissions
+        need = [('Manage Roles', perms.manage_roles), ('Manage Channels', perms.manage_channels), ('Kick', perms.kick_members), ('Ban', perms.ban_members), ('Moderate Members', perms.moderate_members), ('Manage Messages', perms.manage_messages), ('View Audit Log', perms.view_audit_log), ('Manage Nicknames', perms.manage_nicknames)]
+        lat = round(b.latency * 1000) if b.latency == b.latency else -1
+        e = discord.Embed(title='🩺 Bot health', color=discord.Color.green() if lat < 400 else discord.Color.orange(), timestamp=discord.utils.utcnow())
+        e.add_field(name='Latency', value=f'{lat} ms')
+        e.add_field(name='Uptime', value=f'{up // 86400}d {up % 86400 // 3600}h {up % 3600 // 60}m')
+        e.add_field(name='Servers', value=str(len(b.guilds)))
+        e.add_field(name='Commands', value=str(len(b.tree.get_commands())))
+        e.add_field(name='Memory', value=f'{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MB' if resource else 'n/a')
+        e.add_field(name='Python / discord.py', value=f'{sys.version_info.major}.{sys.version_info.minor} / {discord.__version__}')
+        e.add_field(name='Data file', value=f"{('✅ writable' if os.access(folder, os.W_OK) else '❌ not writable')}\n`{DATA_FILE}`" + (f' ({os.path.getsize(DATA_FILE) // 1024} KB)' if os.path.exists(DATA_FILE) else ''))
+        e.add_field(name='Intents', value=f"Message content: {('✅' if b.intents.message_content else '❌')}\nMembers: {('✅' if b.intents.members else '❌')}")
+        e.add_field(name='Ticket AI', value=('✅ on' if ai and ai.cfg()['enabled'] else '❌ off') + f"\nKey: {('✅' if GROQ_KEY else '❌')}\nModel: {(ai.model if ai and ai.model else 'not used yet')}")
+        e.add_field(name='My permissions', value='\n'.join((f"{('✅' if ok else '❌')} {n}" for n, ok in need)), inline=False)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @app_commands.command(name='steal', description='Copy a custom emoji into this server (admin)')
+    @app_commands.describe(emoji='Paste the custom emoji here', name='New name (optional)')
+    @admin_only()
+    async def steal(self, interaction: discord.Interaction, emoji: str, name: Optional[app_commands.Range[str, 2, 32]]=None):
+        m = re.search('<(a?):(\\w+):(\\d+)>', emoji)
+        if not m:
+            return await interaction.response.send_message('Paste a **custom** emoji (from another server), like `:name:` picked from the emoji menu.', ephemeral=True)
+        animated, orig, eid = (bool(m.group(1)), m.group(2), m.group(3))
+        await interaction.response.defer(ephemeral=True)
+        import aiohttp
+        url = f"https://cdn.discordapp.com/emojis/{eid}.{('gif' if animated else 'png')}"
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as s:
+                async with s.get(url) as r:
+                    if r.status != 200:
+                        return await interaction.followup.send("I couldn't download that emoji.", ephemeral=True)
+                    img = await r.read()
+            new = await interaction.guild.create_custom_emoji(name=re.sub('\\W', '_', name or orig), image=img, reason=f'Stolen by {interaction.user}')
+        except discord.HTTPException as ex:
+            return await interaction.followup.send(f'❌ Discord refused: {ex.text}. (I need **Manage Expressions**, and the server needs a free emoji slot.)', ephemeral=True)
+        await interaction.followup.send(f'✅ Added {new} as `:{new.name}:`.', ephemeral=True)
+
+    @app_commands.command(name='ref-embed', description='Post the referral program announcement (admin)')
+    @app_commands.describe(channel='Where to post it', reward='What the referrer gets, e.g. 10% off their next order', friend_reward='What the new customer gets (optional)')
+    @admin_only()
+    async def ref_embed(self, interaction: discord.Interaction, channel: discord.TextChannel, reward: app_commands.Range[str, 1, 200]='a reward on their next order', friend_reward: Optional[app_commands.Range[str, 1, 200]]=None):
+        e = discord.Embed(title='🤝 Referral Program', description=f'Bring a friend to **{BUSINESS_NAME}** and get rewarded!', color=PANEL_COLOR)
+        e.add_field(name='🎁 You get', value=reward, inline=True)
+        if friend_reward:
+            e.add_field(name='🎉 Your friend gets', value=friend_reward, inline=True)
+        e.add_field(name='📋 How it works', value='1️⃣ Send your friend our server\n2️⃣ They open a **Purchase** ticket and tell us who referred them\n3️⃣ After their first order, staff gives you your reward', inline=False)
+        e.add_field(name='⚠️ Rules', value='• No alt accounts or self-referrals\n• The new customer must be new to the shop\n• Staff has the final say', inline=False)
+        if interaction.guild.icon:
+            e.set_thumbnail(url=interaction.guild.icon.url)
+        e.set_footer(text=f'{BUSINESS_NAME} • Referrals')
+        try:
+            await channel.send(embed=e)
+        except discord.HTTPException:
+            return await interaction.response.send_message(f"I can't post in {channel.mention}.", ephemeral=True)
+        await interaction.response.send_message(f'✅ Posted in {channel.mention}.', ephemeral=True)
+
+    @app_commands.command(name='ai-knowledge', description='Post what the support AI knows about your shop (admin)')
+    @admin_only()
+    async def ai_knowledge(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        info = self.bot.get_cog('ai').cfg()['info'].strip()
+        if not info:
+            return await interaction.response.send_message('The AI has no shop info yet. Use `/ai setinfo` first.', ephemeral=True)
+        info += self.bot.get_cog('ai').learned_text().replace('\n\nLEARNED FROM PAST STAFF ANSWERS (use if helpful; if it conflicts with SHOP INFO, trust SHOP INFO):', '\n\n**Learned from staff answers:**')
+        chunks = [info[i:i + 3900] for i in range(0, len(info), 3900)]
+        try:
+            for n, part in enumerate(chunks):
+                e = discord.Embed(title='🤖 What our support AI knows' if n == 0 else None, description=part, color=discord.Color.blurple())
+                if n == len(chunks) - 1:
+                    e.set_footer(text='The AI answers from this information only.')
+                await channel.send(embed=e)
+        except discord.HTTPException:
+            return await interaction.response.send_message(f"I can't post in {channel.mention}.", ephemeral=True)
+        await interaction.response.send_message(f'✅ Posted in {channel.mention}.', ephemeral=True)
+
+    async def build_faq(self):
+        info = self.bot.get_cog('ai').cfg()['info'].strip()
+        if not info:
+            raise RuntimeError('The AI has no shop info yet. Use `/ai setinfo` first.')
+        info += self.bot.get_cog('ai').learned_text()
+        prompt = f'Write a customer FAQ for {BUSINESS_NAME} using ONLY the facts below. Write 6 to 10 questions customers would really ask, each as:\n**Q: question**\nA: short answer\n\nUse only facts that appear below, never invent anything. If the info is thin, write fewer questions. No intro or outro. Under 3500 characters total.\n\nSHOP INFO:\n{info}'
+        return (await self.bot.get_cog('ai').ask([{'role': 'system', 'content': 'You write clear FAQ pages for a game software shop.'}, {'role': 'user', 'content': prompt}]))[:3900]
+
+    def faq_embed(self, text, guild):
+        e = discord.Embed(title='❓ Frequently Asked Questions', description=text, color=PANEL_COLOR, timestamp=discord.utils.utcnow())
+        if guild.icon:
+            e.set_thumbnail(url=guild.icon.url)
+        e.set_footer(text='Auto-updated • Still stuck? Open a ticket')
+        return e
+
+    async def refresh_faq(self, guild):
+        f = self.bot.data.get('faq')
+        if not f:
+            return False
+        ch = guild.get_channel(f['channel'])
+        if ch is None:
+            return False
+        try:
+            text = await self.build_faq()
+            msg = await ch.fetch_message(f['message'])
+            await msg.edit(embed=self.faq_embed(text, guild))
+            return True
+        except Exception as ex:
+            print(f'[FAQ] {ex!r}')
+            return False
+
+    @app_commands.command(name='faq-setup', description='Post an AI-written FAQ in a channel and keep it updated (admin)')
+    @admin_only()
+    async def faq_setup(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            text = await self.build_faq()
+        except Exception as ex:
+            return await interaction.followup.send(f'❌ {str(ex)[:300]}', ephemeral=True)
+        try:
+            msg = await channel.send(embed=self.faq_embed(text, interaction.guild))
+        except discord.HTTPException:
+            return await interaction.followup.send(f"I can't post in {channel.mention}.", ephemeral=True)
+        self.bot.data['faq'] = {'channel': channel.id, 'message': msg.id}
+        self.bot.save_data()
+        await interaction.followup.send(f'✅ FAQ posted in {channel.mention}. It refreshes whenever you change the AI info with `/ai setinfo`.', ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
