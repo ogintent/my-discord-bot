@@ -60,6 +60,7 @@ class MyBot(commands.Bot):
         await self.add_cog(Censor(self))
         await self.add_cog(IPBlock(self))
         await self.add_cog(Tools(self))
+        await self.add_cog(Afk(self))
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -675,6 +676,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner) · /filter · /censor · /ipblock', inline=False)
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
+    e.add_field(name='◆ Shop', value='/products · /afk · /discount · /vouch', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -1893,7 +1895,7 @@ class TicketAI(commands.GroupCog, name='ai'):
     async def learning(self, interaction: discord.Interaction, state: app_commands.Choice[str]):
         self.cfg()['learn'] = state.value == 'on'
         self.bot.save_data()
-        await interaction.response.send_message(f"🧠 Learning from tickets is **{state.name.upper()}**.", ephemeral=True)
+        await interaction.response.send_message(f'🧠 Learning from tickets is **{state.name.upper()}**.', ephemeral=True)
 
     @app_commands.command(name='learned', description='See what the AI has learned from tickets (staff)')
     @staff_only()
@@ -1986,7 +1988,7 @@ class TicketAI(commands.GroupCog, name='ai'):
                 return
             if not c['test'] and any((not m.author.bot and is_staff(m.author) for m in history)):
                 return
-            msgs = [{'role': 'system', 'content': AI_RULES + '\n\nSHOP INFO:\n' + (c['info'] or AI_DEFAULT_INFO) + self.learned_text()}]
+            msgs = [{'role': 'system', 'content': AI_RULES + '\n\nSHOP INFO:\n' + (c['info'] or AI_DEFAULT_INFO) + '\n\n' + shop_text() + self.learned_text()}]
             for m in reversed(history[:12]):
                 if not m.content:
                     continue
@@ -2486,7 +2488,7 @@ class Tools(commands.Cog):
         info = self.bot.get_cog('ai').cfg()['info'].strip()
         if not info:
             raise RuntimeError('The AI has no shop info yet. Use `/ai setinfo` first.')
-        info += self.bot.get_cog('ai').learned_text()
+        info += '\n\n' + shop_text() + self.bot.get_cog('ai').learned_text()
         prompt = f'Write a customer FAQ for {BUSINESS_NAME} using ONLY the facts below. Write 6 to 10 questions customers would really ask, each as:\n**Q: question**\nA: short answer\n\nUse only facts that appear below, never invent anything. If the info is thin, write fewer questions. No intro or outro. Under 3500 characters total.\n\nSHOP INFO:\n{info}'
         return (await self.bot.get_cog('ai').ask([{'role': 'system', 'content': 'You write clear FAQ pages for a game software shop.'}, {'role': 'user', 'content': prompt}]))[:3900]
 
@@ -2528,4 +2530,71 @@ class Tools(commands.Cog):
         self.bot.data['faq'] = {'channel': channel.id, 'message': msg.id}
         self.bot.save_data()
         await interaction.followup.send(f'✅ FAQ posted in {channel.mention}. It refreshes whenever you change the AI info with `/ai setinfo`.', ephemeral=True)
+PRODUCTS = [('Rebooted.lol', [('Rebooted.lol 1 Month Key', '$20.00'), ('Rebooted.lol 2 Month Key', '$25.00'), ('Rebooted.lol Year Key', '$35.00'), ('Rebooted.lol Spoofer 3 Month Key', '$30.00'), ('Rebooted HWID Temp Spoofer Day Key', '$5.99')]), ('Spoofers', [('Temp Spoofer', '$25.00'), ('Perm Spoofer', '$20.00'), ('Retrac Temp-Spoofer', '$25.00'), ('FiveM Temp Spoofer', '$40.00')]), ('Rainbow Six Siege', [('Rainbow Six Siege External Lifetime', '$35.00'), ('R6 Unlock All Tool', '$6.99')]), ('Fortnite', [('Fortnite Internal', '$39.99'), ('Crisis Fortnite External', '$19.99')]), ('Other', [('Steam, Discord, Epic Games Generator', '$34.99')])]
+PAYMENTS_ACCEPTED = ['Cash App', 'Zelle', 'PayPal', 'Venmo']
+REFUND_POLICY = ["Refunds are only issued if the product doesn't work.", 'Exchanges are available upon request.']
+
+def shop_text():
+    lines = ['PRODUCTS AND PRICES (official, always accurate):']
+    for cat, items in PRODUCTS:
+        lines += [f'- {n}: {p}' for n, p in items]
+    lines += ['PAYMENT METHODS: ' + ', '.join(PAYMENTS_ACCEPTED), 'REFUND POLICY: ' + ' '.join(REFUND_POLICY)]
+    return '\n'.join(lines)
+
+@bot.tree.command(name='products', description='See our products, prices, payment methods and refund policy')
+async def products(interaction: discord.Interaction):
+    e = discord.Embed(title=f'🛒 {BUSINESS_NAME} Products & Prices', color=PANEL_COLOR)
+    for cat, items in PRODUCTS:
+        e.add_field(name=f'◆ {cat}', value='\n'.join((f'• {n} — **{p}**' for n, p in items)), inline=False)
+    e.add_field(name='💳 Payments', value='\n'.join((f'• {p}' for p in PAYMENTS_ACCEPTED)), inline=True)
+    e.add_field(name='↩️ Refund Policy', value='\n'.join((f'• {r}' for r in REFUND_POLICY)), inline=True)
+    e.add_field(name='How to buy', value='Open a **Purchase** ticket, or use the website for automatic delivery.', inline=False)
+    if interaction.guild and interaction.guild.icon:
+        e.set_thumbnail(url=interaction.guild.icon.url)
+    e.set_footer(text=f'{BUSINESS_NAME} • Prices in USD')
+    view = discord.ui.View()
+    site = data.get('website', '')
+    if site.startswith(('http://', 'https://')):
+        view.add_item(discord.ui.Button(label='Website', style=discord.ButtonStyle.link, url=site, emoji='🌐'))
+    await interaction.response.send_message(embed=e, view=view)
+
+class Afk(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    def table(self):
+        return self.bot.data.setdefault('afk', {})
+
+    @app_commands.command(name='afk', description="Set yourself as AFK. I'll tell people who mention you")
+    @app_commands.describe(reason='Why you are away (optional)')
+    async def afk(self, interaction: discord.Interaction, reason: app_commands.Range[str, 1, 100]='AFK'):
+        self.table()[str(interaction.user.id)] = {'reason': reason, 'ts': time.time()}
+        self.bot.save_data()
+        await interaction.response.send_message(f'💤 {interaction.user.mention} is now AFK: {discord.utils.escape_mentions(reason)}', allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        t = self.table()
+        if message.author.bot or message.guild is None or (not t):
+            return
+        mine = t.get(str(message.author.id))
+        if mine and time.time() - mine['ts'] > 5:
+            del t[str(message.author.id)]
+            self.bot.save_data()
+            try:
+                await message.channel.send(f'👋 Welcome back {message.author.mention}, I removed your AFK.', delete_after=8, allowed_mentions=discord.AllowedMentions(users=[message.author]))
+            except discord.HTTPException:
+                pass
+        seen = set()
+        for u in message.mentions:
+            info = t.get(str(u.id))
+            if info and u.id not in seen and (u.id != message.author.id):
+                seen.add(u.id)
+                try:
+                    await message.reply(f"💤 **{discord.utils.escape_markdown(u.display_name)}** is AFK: {discord.utils.escape_mentions(info['reason'])} (<t:{int(info['ts'])}:R>)", delete_after=15, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+                except discord.HTTPException:
+                    pass
+                if len(seen) >= 3:
+                    break
 bot.run(os.getenv('DISCORD_TOKEN'))
