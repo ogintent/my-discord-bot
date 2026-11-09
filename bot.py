@@ -684,7 +684,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /afk · /discount · /vouch · /suggest', inline=False)
-    e.add_field(name='◆ Server', value='/welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Server', value='/mediapanel · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -2790,6 +2790,7 @@ class Extras(commands.Cog):
 
     async def cog_load(self):
         self.bot.add_view(SuggestView())
+        self.bot.add_view(MediaView())
 
     @app_commands.command(name='staffstats', description='Staff activity: tickets and moderation actions (staff)')
     @app_commands.describe(member='Show one staff member (leave empty for the leaderboard)')
@@ -2961,4 +2962,34 @@ class Sticky(commands.GroupCog, name='sticky'):
             return await interaction.response.send_message('No sticky messages yet. Use `/sticky set`.', ephemeral=True)
         lines = [f"<#{cid}> · {(r['title'] or r['text'])[:60]}" for cid, r in t.items()]
         await interaction.response.send_message(embed=discord.Embed(title='📌 Sticky messages', description='\n'.join(lines)[:3900], color=15844367), ephemeral=True)
+MEDIA_REQS = [('🎵 TikTok', ['**150+** followers', '**2,000** average views', '**50+** likes per video']), ('▶️ YouTube', ['**50+** subscribers', '**1,000+** views on each video', '**25+** likes per video']), ('🔴 TikTok Live', ['**20** average live viewers', '**15** chatters (commenters)'])]
+MEDIA_GENERAL = ['Public account in good standing (no bans or strikes)', '100% original content, no re-uploads', 'No bought followers, views or likes. We check', "Show our products honestly and follow each platform's rules", 'Keep your videos up for at least 30 days']
+MEDIA_PERKS = ['🔑 Free product access to make content', '🎟️ Your own discount code for your viewers', '⚡ Priority support', '🏷️ Exclusive **Creator** role']
+
+class MediaView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label='Apply for Media', emoji='🎥', style=discord.ButtonStyle.success, custom_id='media:apply')
+    async def apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not data['tickets_enabled']:
+            return await interaction.response.send_message('Applications are closed right now. Try again later.', ephemeral=True)
+        await handle_open(interaction, 'media')
+
+@bot.tree.command(name='mediapanel', description='Post the Content Creator requirements panel here (admin)')
+@app_commands.checks.has_permissions(administrator=True)
+async def mediapanel(interaction: discord.Interaction):
+    e = discord.Embed(title='🎥 Content Creator Program', description=f'Create content for **{BUSINESS_NAME}** and get rewarded.\nMeet the requirements for your platform, then press **Apply for Media** to open a ticket.', color=PANEL_COLOR)
+    for name, lines in MEDIA_REQS:
+        e.add_field(name=name, value='\n'.join((f'• {l}' for l in lines)), inline=True)
+    e.add_field(name='📋 General Requirements', value='\n'.join((f'• {l}' for l in MEDIA_GENERAL)), inline=False)
+    e.add_field(name='📝 What to include in your ticket', value='• Link to your channel / profile\n• A screenshot of your analytics (average views or live viewers)\n• Which platform(s) you create on', inline=False)
+    e.add_field(name='🎁 Perks for approved creators', value='\n'.join(MEDIA_PERKS), inline=False)
+    e.add_field(name='⚠️ Please note', value='Meeting the requirements does not guarantee approval. Staff has the final say.', inline=False)
+    if interaction.guild.icon:
+        e.set_thumbnail(url=interaction.guild.icon.url)
+    e.set_footer(text=f'{BUSINESS_NAME} • Media Team')
+    await interaction.channel.send(embed=e, view=MediaView())
+    await interaction.response.send_message('Media panel posted.', ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
