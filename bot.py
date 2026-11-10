@@ -64,6 +64,8 @@ class MyBot(commands.Bot):
         await self.add_cog(Welcome(self))
         await self.add_cog(Extras(self))
         await self.add_cog(Sticky(self))
+        await self.add_cog(ScamGuard(self))
+        apply_visibility(self.tree)
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -683,8 +685,8 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Protection', value='/antispam · /antinuke (server owner) · /filter · /censor · /ipblock', inline=False)
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
-    e.add_field(name='◆ Shop', value='/products · /afk · /discount · /vouch · /suggest', inline=False)
-    e.add_field(name='◆ Server', value='/mediapanel · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
+    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -2430,6 +2432,8 @@ class Tools(commands.Cog):
         e.add_field(name='Data file', value=f"{('✅ writable' if os.access(folder, os.W_OK) else '❌ not writable')}\n`{DATA_FILE}`" + (f' ({os.path.getsize(DATA_FILE) // 1024} KB)' if os.path.exists(DATA_FILE) else ''))
         e.add_field(name='Intents', value=f"Message content: {('✅' if b.intents.message_content else '❌')}\nMembers: {('✅' if b.intents.members else '❌')}")
         e.add_field(name='Ticket AI', value=('✅ on' if ai and ai.cfg()['enabled'] else '❌ off') + f"\nKey: {('✅' if GROQ_KEY else '❌')}\nModel: {(ai.model if ai and ai.model else 'not used yet')}")
+        sr = g.get_role(STAFF_ROLE_ID)
+        e.add_field(name='Staff role', value=f"{sr.mention}: Manage Messages {('✅' if sr.permissions.manage_messages else '❌ (staff commands are hidden from them. Give it, or set HIDE_STAFF_COMMANDS=0)')}" if sr else '❌ not found', inline=False)
         e.add_field(name='My permissions', value='\n'.join((f"{('✅' if ok else '❌')} {n}" for n, ok in need)), inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
 
@@ -2992,4 +2996,204 @@ async def mediapanel(interaction: discord.Interaction):
     e.set_footer(text=f'{BUSINESS_NAME} • Media Team')
     await interaction.channel.send(embed=e, view=MediaView())
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
+from decimal import Decimal, ROUND_HALF_UP
+PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'afk', 'suggest', 'calc', 'recommend'}
+PERM_BY_CMD = {'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+
+def apply_visibility(tree):
+    """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
+    hide_staff = os.getenv('HIDE_STAFF_COMMANDS', '1') != '0'
+    for cmd in tree.get_commands():
+        cmd.guild_only = True
+        if cmd.name in PUBLIC_CMDS:
+            continue
+        perm = PERM_BY_CMD.get(cmd.name)
+        if perm is None:
+            if not hide_staff:
+                continue
+            perm = 'manage_messages'
+        cmd.default_permissions = discord.Permissions(**{perm: True})
+
+def all_products():
+    return [(n, Decimal(p.replace('$', '').replace(',', ''))) for cat, items in PRODUCTS for n, p in items]
+
+def find_product(text):
+    text = text.strip().lower()
+    items = all_products()
+    for n, p in items:
+        if n.lower() == text:
+            return (n, p)
+    hits = [(n, p) for n, p in items if text in n.lower()]
+    return hits[0] if len(hits) == 1 else None
+
+async def product_autocomplete(interaction: discord.Interaction, current: str):
+    cur = current.lower()
+    return [app_commands.Choice(name=n[:100], value=n[:100]) for n, p in all_products() if cur in n.lower()][:25]
+
+def money(d):
+    return f"${d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}"
+
+@bot.tree.command(name='calc', description='Work out the total for your order')
+@app_commands.describe(product='First product', quantity='How many of it (default 1)', product2='Second product (optional)', product3='Third product (optional)', discount='Discount to apply', percent='Custom discount % (staff only)')
+@app_commands.autocomplete(product=product_autocomplete, product2=product_autocomplete, product3=product_autocomplete)
+@app_commands.choices(discount=[app_commands.Choice(name='No discount', value='none'), app_commands.Choice(name='Server Booster (20%)', value='booster')])
+async def calc(interaction: discord.Interaction, product: str, quantity: app_commands.Range[int, 1, 20]=1, product2: Optional[str]=None, product3: Optional[str]=None, discount: Optional[app_commands.Choice[str]]=None, percent: Optional[app_commands.Range[int, 1, 90]]=None):
+    lines, subtotal = ([], Decimal(0))
+    for i, name in enumerate((product, product2, product3)):
+        if not name:
+            continue
+        hit = find_product(name)
+        if hit is None:
+            return await interaction.response.send_message(f"I couldn't find **{discord.utils.escape_markdown(name)}**. Pick one from the list that appears as you type.", ephemeral=True)
+        qty = quantity if i == 0 else 1
+        subtotal += hit[1] * qty
+        lines.append(f'• {hit[0]} × {qty} — **{money(hit[1] * qty)}**')
+    pct, why = (0, '')
+    if percent:
+        if not is_staff(interaction.user):
+            return await interaction.response.send_message('Only staff can use a custom percent.', ephemeral=True)
+        pct, why = (percent, f'Custom {percent}%')
+    elif discount and discount.value == 'booster':
+        if interaction.user.premium_since is None:
+            return await interaction.response.send_message("💎 You're not boosting this server, so the booster discount doesn't apply.", ephemeral=True)
+        pct, why = (20, 'Server Booster 20%')
+    off = subtotal * pct / 100
+    e = discord.Embed(title='🧮 Order Total', description='\n'.join(lines), color=PANEL_COLOR)
+    e.add_field(name='Subtotal', value=money(subtotal))
+    if pct:
+        e.add_field(name=f'Discount ({why})', value=f'-{money(off)}')
+    e.add_field(name='Total', value=f'**{money(subtotal - off)}**')
+    e.set_footer(text='Estimate only. Open a Purchase ticket to order. Staff confirm the final price.')
+    await interaction.response.send_message(embed=e, ephemeral=True)
+RECOMMEND_RULES = f"You help customers of {BUSINESS_NAME}, a game software shop, pick a product. Use ONLY the products in the list below. Recommend 1 to 3 products that fit what the customer describes and give each one's exact price from the list with a short reason. If nothing fits, say so and suggest opening a ticket. Never claim a product is undetected, safe or ban-proof. Always reply in the customer's language, under 120 words, and end by telling them to open a Purchase ticket to buy."
+recommend_cooldown = {}
+
+@bot.tree.command(name='recommend', description='Tell the AI what you need and it suggests a product')
+@app_commands.describe(need='What you want, like "Fortnite cheat under $30" or "a spoofer"')
+async def recommend(interaction: discord.Interaction, need: app_commands.Range[str, 3, 300]):
+    ai = bot.get_cog('ai')
+    if not GROQ_KEY or ai is None or (not ai.cfg()['enabled']):
+        return await interaction.response.send_message('The AI is turned off right now. Try `/products` or open a ticket.', ephemeral=True)
+    wait = 30 - (time.time() - recommend_cooldown.get(interaction.user.id, 0))
+    if wait > 0:
+        return await interaction.response.send_message(f'Please wait {int(wait)}s before asking again.', ephemeral=True)
+    recommend_cooldown[interaction.user.id] = time.time()
+    await interaction.response.defer()
+    try:
+        reply = await ai.ask([{'role': 'system', 'content': RECOMMEND_RULES + '\n\n' + shop_text()}, {'role': 'user', 'content': need}])
+    except Exception as ex:
+        print(f'[recommend] {ex!r}')
+        return await interaction.followup.send('Sorry, the AI is having trouble. Try `/products` or open a ticket.')
+    reply = reply.replace('[ESCALATE]', '').strip()[:1800]
+    e = discord.Embed(title='🤖 Recommendation', description=reply, color=discord.Color.blurple())
+    e.add_field(name='You asked', value=need[:300], inline=False)
+    e.set_footer(text='AI suggestion. See /products for everything we sell.')
+    await interaction.followup.send(embed=e, allowed_mentions=discord.AllowedMentions.none())
+SCAM_PATTERNS = [('free gifts / fake giveaways', 3, 'free\\s*nitro|nitro\\s*gift|steam\\s*gift|gift\\s*-?\\s*card|airdrop|claim\\s+your\\s+(prize|reward|nitro)|you\\s*(have\\s*)?won\\b'), ('"send first" tactics', 3, "(send|pay)\\s+(me\\s+)?first|you\\s+go\\s+first|i\\s*'?(will|ll)\\s*send\\s+(it\\s+)?after|trust\\s+me\\s+bro"), ('other Discord invites', 3, '(discord\\.gg|discord(app)?\\.com/invite)/\\w+'), ('moving to DMs / other apps', 2, '\\b(dm|pm)\\s+me\\b|\\badd\\s+me\\b|telegram|t\\.me/|whats\\s*app|go\\s+private|message\\s+me\\s+privately'), ('selling / undercutting', 2, '\\bi\\s+sell\\b|\\bselling\\b|cheaper\\s+than|better\\s+price|buy\\s+from\\s+me|my\\s+(shop|store)\\b'), ('payment handles outside a ticket', 2, '(?<!\\w)\\$[a-z][a-z0-9_]{2,}|paypal\\.me/|cash\\.app/')]
+SCAM_COMPILED = [(label, w, re.compile(p, re.I)) for label, w, p in SCAM_PATTERNS]
+IMPERSONATE = re.compile('\\b(staff|admin|administrator|owner|moderator|support|founder)\\b', re.I)
+SCAM_ACTIONS = {'delete': 'Delete the message', 'warn': 'Delete and warn', 'timeout': 'Delete and time out 10 minutes'}
+
+def scam_scan(text, member=None):
+    t = text.translate(ZW)
+    flat = clean_text(text)
+    score, why = (0, [])
+    for label, w, rx in SCAM_COMPILED:
+        if rx.search(t) or rx.search(flat):
+            score += w
+            why.append(label)
+    if why and member is not None and (IMPERSONATE.search(member.display_name) or IMPERSONATE.search(member.name)):
+        score += 2
+        why.append('name looks like staff')
+    return (score, why)
+
+class ScamGuard(commands.GroupCog, name='scamguard'):
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    def cfg(self):
+        c = self.bot.data.setdefault('scamguard', {})
+        c.setdefault('enabled', False)
+        c.setdefault('action', 'delete')
+        return c
+
+    @app_commands.command(name='enable', description='Turn the scam guard on (staff)')
+    @app_commands.choices(action=[app_commands.Choice(name=v, value=k) for k, v in SCAM_ACTIONS.items()])
+    @staff_only()
+    async def enable(self, interaction: discord.Interaction, action: app_commands.Choice[str]):
+        self.cfg().update(enabled=True, action=action.value)
+        self.bot.save_data()
+        note = '' if self.bot.intents.message_content else "\n⚠️ Message Content Intent is off, so I can't read messages (`MESSAGE_CONTENT=1`)."
+        await interaction.response.send_message(f'🛡️ Scam guard is **ON**: {action.name}.{note}', ephemeral=True)
+
+    @app_commands.command(name='disable', description='Turn the scam guard off (staff)')
+    @staff_only()
+    async def disable(self, interaction: discord.Interaction):
+        self.cfg()['enabled'] = False
+        self.bot.save_data()
+        await interaction.response.send_message('🛡️ Scam guard is **OFF**.', ephemeral=True)
+
+    @app_commands.command(name='status', description='See what the scam guard watches for (staff)')
+    @staff_only()
+    async def status(self, interaction: discord.Interaction):
+        c = self.cfg()
+        e = discord.Embed(title='🛡️ Scam guard', color=discord.Color.green() if c['enabled'] else discord.Color.red())
+        e.add_field(name='Status', value='ON' if c['enabled'] else 'OFF')
+        e.add_field(name='Action', value=SCAM_ACTIONS[c['action']])
+        e.add_field(name='Watching for', value='\n'.join(('• ' + label for label, w, p in SCAM_PATTERNS)) + '\n• names that look like staff', inline=False)
+        e.set_footer(text='Staff and ticket channels are ignored. Try /scamguard test.')
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @app_commands.command(name='test', description='Check how the scam guard rates a message (staff)')
+    @staff_only()
+    async def test(self, interaction: discord.Interaction, text: app_commands.Range[str, 1, 500]):
+        score, why = scam_scan(text)
+        verdict = '🚫 **Would be caught**' if score >= 3 else '✅ Would be allowed'
+        await interaction.response.send_message(f'{verdict}\nScore: **{score}** (needs 3)\n' + ('\n'.join(('• ' + w for w in why)) or 'No scam patterns found.'), ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        c = self.cfg()
+        if not c['enabled'] or message.guild is None or message.author.bot or (not message.content):
+            return
+        m = message.author
+        if not isinstance(m, discord.Member) or is_staff(m) or m.guild_permissions.manage_messages:
+            return
+        ch = message.channel
+        if isinstance(ch, discord.TextChannel) and is_ticket(ch):
+            return
+        score, why = scam_scan(message.content, m)
+        if score < 3:
+            return
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            return
+        extra = ''
+        if c['action'] == 'warn':
+            self.bot.data['warnings'].setdefault(str(m.id), []).append({'reason': 'Scam guard: ' + ', '.join(why), 'mod': 'Scam guard', 'time': discord.utils.utcnow().strftime('%Y-%m-%d')})
+            self.bot.save_data()
+            extra = ' and warned'
+        elif c['action'] == 'timeout':
+            try:
+                await m.timeout(timedelta(minutes=10), reason='Scam guard')
+                extra = ' and timed out for 10 minutes'
+            except discord.HTTPException:
+                pass
+        try:
+            await ch.send(f'🛡️ {m.mention}, your message was removed{extra}. It looked like a scam or advertising. All deals happen in tickets.', delete_after=10, allowed_mentions=discord.AllowedMentions(users=[m]))
+        except discord.HTTPException:
+            pass
+        detail = f"{', '.join(why)} in {ch.mention}{extra}\n> {message.content[:300]}"
+        if MOD_LOG_CHANNEL_ID:
+            await self.bot.mod_log(message.guild, '🚨 Scam guard', message.guild.me, m, detail, discord.Color.red())
+        else:
+            log = self.bot.get_channel(LOG_CHANNEL_ID)
+            if log:
+                try:
+                    await log.send(embed=discord.Embed(title='🚨 Scam guard', description=f'{m.mention}: {detail}', color=discord.Color.red()))
+                except discord.HTTPException:
+                    pass
 bot.run(os.getenv('DISCORD_TOKEN'))
