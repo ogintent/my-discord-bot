@@ -686,7 +686,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
-    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /fixchannels · /partnership · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /fixchannels · /fixroles · /partnership · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -3003,7 +3003,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+PERM_BY_CMD = {'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -3388,4 +3388,118 @@ async def fixchannels_undo(interaction: discord.Interaction):
     data.pop('fixchannels', None)
     save_data()
     await interaction.followup.send(f'↩️ Restored **{ok}** channel names' + (' and the category order.' if snap['positions'] else '.'), ephemeral=True)
+ROLE_STYLES = {'space': ' ', 'dot': '・', 'bar': '┃'}
+ROLE_EMOJI = [(('owner', 'founder', 'ceo', 'co-owner', 'coowner'), '👑'), (('dev', 'developer', 'coder'), '💻'), (('admin', 'administrator'), '⚙️'), (('manager', 'head'), '📋'), (('mod', 'moderator'), '🛡️'), (('support', 'helper', 'help'), '🎧'), (('trial', 'intern'), '🔰'), (('staff', 'team'), '🔰'), (('reseller', 'resell'), '💳'), (('customer', 'client', 'buyer', 'purchaser'), '🛒'), (('booster', 'boost', 'nitro'), '💎'), (('media', 'creator', 'youtuber', 'streamer', 'tiktok', 'influencer'), '🎥'), (('vip', 'premium', 'donator', 'supporter'), '⭐'), (('partner',), '🤝'), (('ping', 'notification', 'alert', 'giveaway'), '🔔'), (('muted', 'mute', 'jailed', 'timeout'), '🔇'), (('unverified',), '❔'), (('verified', 'member', 'members'), '✅'), (('bot', 'bots'), '🤖'), (('blacklist', 'blacklisted', 'banned', 'scammer'), '⛔')]
+ROLE_COLORS = {'👑': 15844367, '💻': 1752220, '⚙️': 15158332, '📋': 15105570, '🛡️': 3447003, '🎧': 3066993, '🔰': 6139362, '💳': 10181046, '🛒': 3066993, '💎': 16023551, '🎥': 10181046, '⭐': 15844367, '🤝': 1752220, '✅': 9807270}
+ROLE_STAFFISH = {'👑', '💻', '⚙️', '📋', '🛡️', '🎧', '🔰'}
+
+def role_pretty(base):
+    base = re.sub('[-_]+', ' ', base).strip()
+    return base.title() if base.islower() or base.isupper() else base
+ROLE_PREFIX = 'Frontline | '
+
+def role_plan(guild, colors, hoist):
+    top = guild.me.top_role.position
+    plan = []
+    for r in guild.roles:
+        if r.is_default() or r.managed or r.position >= top:
+            continue
+        base = re.sub('^[^\\w]+', '', r.name)
+        base = re.sub('^frontline\\s*[|│┃・:»\\-]*\\s*', '', base, flags=re.I).strip(' -_|·')
+        if not base:
+            continue
+        kind = fix_match(base, ROLE_EMOJI, '')
+        new = f'{ROLE_PREFIX}{role_pretty(base)}'[:100]
+        color = ROLE_COLORS.get(kind) if colors and r.color.value == 0 else None
+        hoisted = True if hoist and kind in ROLE_STAFFISH and (not r.hoist) else None
+        if new != r.name or color is not None or hoisted is not None:
+            plan.append((r.id, r.name, new, color, hoisted))
+    return plan
+
+async def role_apply(guild, plan, user, progress=None):
+    snap = {'roles': {}, 'ts': time.time()}
+    ok, failed = (0, [])
+    for n, (rid, old, new, color, hoisted) in enumerate(plan, 1):
+        role = guild.get_role(rid)
+        try:
+            if role is not None:
+                snap['roles'][str(rid)] = {'name': role.name, 'color': role.color.value, 'hoist': role.hoist}
+                kw = {'name': new, 'reason': f'/fixroles by {user}'}
+                if color is not None:
+                    kw['color'] = discord.Colour(color)
+                if hoisted is not None:
+                    kw['hoist'] = hoisted
+                await role.edit(**kw)
+                ok += 1
+        except discord.HTTPException:
+            failed.append(old)
+        if progress and n % 8 == 0:
+            await progress(n, len(plan))
+    data['fixroles'] = snap
+    save_data()
+    return (ok, failed)
+
+class FixRolesConfirm(discord.ui.View):
+
+    def __init__(self, user_id, plan):
+        super().__init__(timeout=180)
+        self.user_id, self.plan = (user_id, plan)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return interaction.user.id == self.user_id
+
+    @discord.ui.button(label='Apply changes', emoji='✨', style=discord.ButtonStyle.success)
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content=f'⏳ Updating {len(self.plan)} roles...', embed=None, view=None)
+
+        async def progress(n, total):
+            await interaction.edit_original_response(content=f'⏳ Updating... {n}/{total}')
+        ok, failed = await role_apply(interaction.guild, self.plan, interaction.user, progress)
+        text = f'✅ Done! Updated **{ok}** roles. Use `/fixroles-undo` to restore them.'
+        if failed:
+            text += f"\n⚠️ I couldn't edit: {', '.join(failed[:10])}"
+        await interaction.edit_original_response(content=text)
+        self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content='Cancelled. Nothing was changed.', embed=None, view=None)
+        self.stop()
+
+@bot.tree.command(name='fixroles', description='Rename every role to "Frontline | Role Name" (admin)')
+@app_commands.describe(colors='Give colors to roles that have none', hoist_staff='Show staff roles as their own group in the member list')
+@app_commands.checks.has_permissions(administrator=True)
+async def fixroles(interaction: discord.Interaction, colors: bool=False, hoist_staff: bool=False):
+    g = interaction.guild
+    if not g.me.guild_permissions.manage_roles:
+        return await interaction.response.send_message('I need the **Manage Roles** permission first.', ephemeral=True)
+    plan = role_plan(g, colors, hoist_staff)
+    if not plan:
+        return await interaction.response.send_message('✨ Nothing to change. Every role I can edit is already named Frontline | ...  (I skip roles above mine and bot-managed roles.)', ephemeral=True)
+    lines = [f'{old}  →  {new}' + ('  (+color)' if color is not None else '') + ('  (+group)' if hoisted else '') for _, old, new, color, hoisted in plan]
+    shown = '\n'.join(lines[:25]) + (f'\n… and {len(lines) - 25} more' if len(lines) > 25 else '')
+    e = discord.Embed(title='✨ Role rename preview', description=f'```{shown[:3800]}```', color=discord.Color.blurple())
+    e.add_field(name='Changes', value=f'**{len(plan)}** roles', inline=False)
+    e.set_footer(text='Permissions and role order are never touched. Bot roles and roles above mine are skipped. /fixroles-undo restores everything.')
+    await interaction.response.send_message(embed=e, view=FixRolesConfirm(interaction.user.id, plan), ephemeral=True)
+
+@bot.tree.command(name='fixroles-undo', description='Restore roles to how they were before the last /fixroles (admin)')
+@app_commands.checks.has_permissions(administrator=True)
+async def fixroles_undo(interaction: discord.Interaction):
+    snap = data.get('fixroles')
+    if not snap:
+        return await interaction.response.send_message('Nothing to undo.', ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    ok = 0
+    for rid, old in snap['roles'].items():
+        role = interaction.guild.get_role(int(rid))
+        try:
+            if role is not None:
+                await role.edit(name=old['name'], color=discord.Colour(old['color']), hoist=old['hoist'], reason=f'/fixroles-undo by {interaction.user}')
+                ok += 1
+        except discord.HTTPException:
+            pass
+    data.pop('fixroles', None)
+    save_data()
+    await interaction.followup.send(f'↩️ Restored **{ok}** roles.', ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
