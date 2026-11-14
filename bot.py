@@ -686,7 +686,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
-    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /partnership · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -1757,6 +1757,7 @@ class Community(commands.Cog):
         await interaction.channel.send(embed=e, view=BoosterView())
         await interaction.response.send_message('Booster panel posted.', ephemeral=True)
 GROQ_KEY = os.getenv('GROQ_API_KEY', '')
+AI_STAFF_COOLDOWN = 600
 GROQ_MODEL = os.getenv('GROQ_MODEL', 'auto')
 AI_URL = 'https://api.groq.com/openai/v1/chat/completions'
 AI_DEFAULT_INFO = 'No shop details have been added yet. Tell the customer a staff member will help shortly and use [ESCALATE].'
@@ -1841,7 +1842,7 @@ class TicketAI(commands.GroupCog, name='ai'):
         e.add_field(name='Test mode', value='🧪 ON' if c['test'] else 'off')
         e.add_field(name='Learning', value=('🧠 ON' if c['learn'] else 'off') + f" ({len(c['learned'])} learned)")
         e.add_field(name='Model', value=GROQ_MODEL + (f' → {self.model}' if self.model else ''), inline=False)
-        e.set_footer(text='The AI only answers the ticket opener, and stops once a staff member replies.')
+        e.set_footer(text=f'The AI only answers the ticket opener. It stays quiet for {AI_STAFF_COOLDOWN // 60} minutes after a staff member replies.')
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     def learned_text(self):
@@ -1996,8 +1997,12 @@ class TicketAI(commands.GroupCog, name='ai'):
                 history = [m async for m in ch.history(limit=30)]
             except discord.HTTPException:
                 return
-            if not c['test'] and any((not m.author.bot and is_staff(m.author) for m in history)):
-                return
+            if not c['test']:
+                now = discord.utils.utcnow()
+                recent = [m for m in history if not m.author.bot and isinstance(m.author, discord.Member) and is_staff(m.author) and ((now - m.created_at).total_seconds() < AI_STAFF_COOLDOWN)]
+                if recent:
+                    print(f'[AI] quiet in {ch.name}: staff member {recent[0].author} spoke in the last {AI_STAFF_COOLDOWN // 60} minutes')
+                    return
             msgs = [{'role': 'system', 'content': AI_RULES + '\n\nSHOP INFO:\n' + (c['info'] or AI_DEFAULT_INFO) + '\n\n' + shop_text() + self.learned_text()}]
             for m in reversed(history[:12]):
                 if not m.content:
@@ -3196,4 +3201,29 @@ class ScamGuard(commands.GroupCog, name='scamguard'):
                     await log.send(embed=discord.Embed(title='🚨 Scam guard', description=f'{m.mention}: {detail}', color=discord.Color.red()))
                 except discord.HTTPException:
                     pass
+INVITE_URL = 'https://discord.gg/frontlinecheats'
+
+@bot.tree.command(name='partnership', description='Post the partnership ad with a Join button (staff)')
+@app_commands.describe(channel='Where to post it (default: this channel)')
+@staff_only()
+async def partnership(interaction: discord.Interaction, channel: Optional[discord.TextChannel]=None):
+    ch = channel or interaction.channel
+    perms = ch.permissions_for(interaction.guild.me)
+    if not (perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {ch.mention}.', ephemeral=True)
+    e = discord.Embed(title=f'🔥 {BUSINESS_NAME} | Partnership', description='**Looking for partners!** We are a growing community for game software, spoofers and tools.', color=PANEL_COLOR)
+    e.add_field(name='🛒 What we offer', value='• Rebooted.lol keys, spoofers (temp & perm), Rainbow Six Siege and Fortnite tools, and more\n• Payments: ' + ', '.join(PAYMENTS_ACCEPTED) + "\n• Refunds if the product doesn't work, and exchanges on request\n• Fast ticket support, giveaways and a vouch system\n• Referral program and creator program", inline=False)
+    e.add_field(name="🤝 What we're looking for", value='• An active server with real members\n• A partnership channel where we can post our ad\n• We post yours in return', inline=False)
+    e.add_field(name='📩 Want to partner?', value='Open a ticket in our server and choose **General Support**, or DM a staff member.', inline=False)
+    e.add_field(name='🔗 Invite', value=INVITE_URL, inline=False)
+    if interaction.guild.icon:
+        e.set_thumbnail(url=interaction.guild.icon.url)
+    e.set_footer(text=f'{BUSINESS_NAME} • Partnerships')
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label='Join Frontline', style=discord.ButtonStyle.link, url=INVITE_URL, emoji='🔥'))
+    try:
+        await ch.send(embed=e, view=view)
+    except discord.HTTPException:
+        return await interaction.response.send_message(f"I couldn't post in {ch.mention}.", ephemeral=True)
+    await interaction.response.send_message(f'✅ Partnership ad posted in {ch.mention}.', ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
