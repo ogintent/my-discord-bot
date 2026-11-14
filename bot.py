@@ -65,6 +65,8 @@ class MyBot(commands.Bot):
         await self.add_cog(Extras(self))
         await self.add_cog(Sticky(self))
         await self.add_cog(ScamGuard(self))
+        await self.add_cog(Blacklist(self))
+        await self.add_cog(TicketTools(self))
         apply_visibility(self.tree)
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
@@ -295,6 +297,8 @@ class CloseView(discord.ui.View):
 async def handle_open(interaction: discord.Interaction, kind: str):
     if not data['tickets_enabled']:
         return await interaction.response.send_message('Tickets are currently closed. Please try again later.', ephemeral=True)
+    if str(interaction.user.id) in data.get('blacklist', {}):
+        return await interaction.response.send_message('You are not able to open tickets in this server.', ephemeral=True)
     await interaction.response.defer(ephemeral=True)
     ch, existing = await create_ticket(interaction.guild, interaction.user, kind)
     if existing:
@@ -686,7 +690,9 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
-    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /fixchannels · /fixroles · /partnership · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
+    e.add_field(name='◆ Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /blacklist · /backup · /restore (staff)', inline=False)
+    e.add_field(name='◆ Server Tools', value='/scamguard · /mediapanel · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -1989,6 +1995,8 @@ class TicketAI(commands.GroupCog, name='ai'):
             return
         if is_staff(message.author) and (not c['test']):
             return
+        if self.bot.data.get('tickets_meta', {}).get(str(ch.id), {}).get('claimed_by') and (not c['test']):
+            return
         lock = self.locks.setdefault(ch.id, asyncio.Lock())
         if lock.locked() or time.monotonic() - self.last.get(ch.id, -999) < 4:
             return
@@ -2372,6 +2380,9 @@ class Tools(commands.Cog):
             e.add_field(name='In server', value='No', inline=False)
         warns = self.bot.data.get('warnings', {}).get(str(user.id), [])
         e.add_field(name='Warnings', value=str(len(warns)))
+        bl = self.bot.data.get('blacklist', {}).get(str(user.id))
+        if bl:
+            e.add_field(name='⛔ Blacklisted', value=bl['reason'][:200], inline=False)
         try:
             await guild.fetch_ban(user)
             e.add_field(name='Ban', value='🔨 Banned')
@@ -3002,8 +3013,8 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.channel.send(embed=e, view=MediaView())
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
-PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'afk', 'suggest', 'calc', 'recommend'}
+PERM_BY_CMD = {'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -3502,4 +3513,500 @@ async def fixroles_undo(interaction: discord.Interaction):
     data.pop('fixroles', None)
     save_data()
     await interaction.followup.send(f'↩️ Restored **{ok}** roles.', ephemeral=True)
+
+def snap_overwrites(ch):
+    out = []
+    for target, ow in ch.overwrites.items():
+        allow, deny = ow.pair()
+        if isinstance(target, discord.Role):
+            out.append({'t': 'role', 'id': target.id, 'name': target.name, 'default': target.is_default(), 'allow': allow.value, 'deny': deny.value})
+        else:
+            out.append({'t': 'member', 'id': target.id, 'allow': allow.value, 'deny': deny.value})
+    return out
+
+def make_backup(guild, by):
+    roles = [{'id': r.id, 'name': r.name, 'color': r.color.value, 'perms': r.permissions.value, 'hoist': r.hoist, 'mentionable': r.mentionable, 'pos': r.position} for r in guild.roles if not r.is_default() and (not r.managed)]
+    chans = []
+    for ch in guild.channels:
+        if isinstance(ch, discord.TextChannel) and ch.topic and ch.topic.isdigit():
+            continue
+        kind = fix_kind(ch)
+        if kind is None:
+            continue
+        d = {'id': ch.id, 'name': ch.name, 'kind': kind, 'pos': ch.position, 'cat': ch.category.name if getattr(ch, 'category', None) else None, 'ow': snap_overwrites(ch)}
+        if kind in ('text', 'news', 'forum', 'stage'):
+            d['topic'] = getattr(ch, 'topic', None)
+        if kind in ('text', 'news', 'forum'):
+            d['nsfw'] = ch.nsfw
+            d['slow'] = getattr(ch, 'slowmode_delay', 0)
+        if kind == 'voice':
+            d['limit'] = ch.user_limit
+        chans.append(d)
+    rec = {'ts': time.time(), 'by': by, 'roles': roles, 'channels': chans}
+    lst = data.setdefault('backups', {}).setdefault(str(guild.id), [])
+    lst.append(rec)
+    del lst[:-3]
+    save_data()
+    return rec
+
+def restore_plan(guild, rec):
+    role_names = {r.name for r in guild.roles}
+    miss_roles = [r for r in rec['roles'] if guild.get_role(r['id']) is None and r['name'] not in role_names]
+    have = {(c.name, fix_kind(c)) for c in guild.channels}
+    miss_ch = [c for c in rec['channels'] if guild.get_channel(c['id']) is None and (c['name'], c['kind']) not in have]
+    return (miss_roles, miss_ch)
+
+def build_overwrites(guild, ow_list):
+    out = {}
+    for o in ow_list:
+        if o['t'] == 'role':
+            target = guild.default_role if o['default'] else discord.utils.get(guild.roles, name=o['name'])
+        else:
+            target = guild.get_member(o['id'])
+        if target is None:
+            continue
+        out[target] = discord.PermissionOverwrite.from_pair(discord.Permissions(o['allow']), discord.Permissions(o['deny']))
+    return out
+
+async def restore_apply(guild, miss_roles, miss_ch, user):
+    made_r, made_c, failed = (0, 0, [])
+    reason = f'/restore by {user}'
+    for r in sorted(miss_roles, key=lambda r: -r['pos']):
+        try:
+            await guild.create_role(name=r['name'], colour=discord.Colour(r['color']), permissions=discord.Permissions(r['perms']), hoist=r['hoist'], mentionable=r['mentionable'], reason=reason)
+            made_r += 1
+        except discord.HTTPException:
+            failed.append(r['name'])
+    cats = {c.name: c for c in guild.categories}
+    ordered = sorted(miss_ch, key=lambda c: (c['kind'] != 'category', c['pos']))
+    for c in ordered:
+        ow = build_overwrites(guild, c['ow'])
+        try:
+            if c['kind'] == 'category':
+                cats[c['name']] = await guild.create_category(c['name'], overwrites=ow, reason=reason)
+            else:
+                cat = cats.get(c['cat']) if c['cat'] else None
+                if c['kind'] in ('text', 'news'):
+                    await guild.create_text_channel(c['name'], category=cat, overwrites=ow, topic=c.get('topic'), nsfw=c.get('nsfw', False), slowmode_delay=c.get('slow', 0), news=c['kind'] == 'news', reason=reason)
+                elif c['kind'] == 'voice':
+                    await guild.create_voice_channel(c['name'], category=cat, overwrites=ow, user_limit=c.get('limit') or 0, reason=reason)
+                elif c['kind'] == 'stage':
+                    await guild.create_stage_channel(c['name'], category=cat, overwrites=ow, topic=c.get('topic') or c['name'], reason=reason)
+                elif c['kind'] == 'forum':
+                    await guild.create_forum(c['name'], category=cat, overwrites=ow, topic=c.get('topic') or '', reason=reason)
+            made_c += 1
+        except (discord.HTTPException, TypeError):
+            failed.append(c['name'])
+    return (made_r, made_c, failed)
+
+class RestoreConfirm(discord.ui.View):
+
+    def __init__(self, user_id, miss_roles, miss_ch):
+        super().__init__(timeout=180)
+        self.user_id, self.miss_roles, self.miss_ch = (user_id, miss_roles, miss_ch)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return interaction.user.id == self.user_id
+
+    @discord.ui.button(label='Restore missing items', emoji='♻️', style=discord.ButtonStyle.success)
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content='⏳ Restoring. This can take a minute...', embed=None, view=None)
+        r, c, failed = await restore_apply(interaction.guild, self.miss_roles, self.miss_ch, interaction.user)
+        text = f'✅ Restored **{r}** roles and **{c}** channels.'
+        if failed:
+            text += f"\n⚠️ Couldn't restore: {', '.join(failed[:10])}"
+        text += '\nRole order and member roles are not restored. Check Server Settings → Roles.'
+        await interaction.edit_original_response(content=text)
+        self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content='Cancelled. Nothing was changed.', embed=None, view=None)
+        self.stop()
+
+@bot.tree.command(name='backup', description='Save a snapshot of your roles and channels (admin)')
+@app_commands.checks.has_permissions(administrator=True)
+async def backup_cmd(interaction: discord.Interaction):
+    rec = make_backup(interaction.guild, interaction.user.id)
+    e = discord.Embed(title='💾 Backup saved', color=discord.Color.green(), timestamp=discord.utils.utcnow())
+    e.add_field(name='Roles', value=str(len(rec['roles'])))
+    e.add_field(name='Channels & categories', value=str(len(rec['channels'])))
+    e.set_footer(text='Keeps your last 3 backups. If anything gets deleted, run /restore. Ticket channels are not backed up.')
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+@bot.tree.command(name='restore', description='Recreate roles and channels that were deleted since a backup (admin)')
+@app_commands.describe(which='1 = newest backup, 2 = the one before, 3 = oldest')
+@app_commands.checks.has_permissions(administrator=True)
+async def restore_cmd(interaction: discord.Interaction, which: app_commands.Range[int, 1, 3]=1):
+    lst = data.get('backups', {}).get(str(interaction.guild.id), [])
+    if not lst:
+        return await interaction.response.send_message('No backups yet. Run `/backup` first.', ephemeral=True)
+    if which > len(lst):
+        return await interaction.response.send_message(f'You only have {len(lst)} backup(s).', ephemeral=True)
+    g = interaction.guild
+    if not (g.me.guild_permissions.manage_channels and g.me.guild_permissions.manage_roles):
+        return await interaction.response.send_message('I need **Manage Channels** and **Manage Roles** first.', ephemeral=True)
+    rec = lst[-which]
+    miss_roles, miss_ch = restore_plan(g, rec)
+    if not miss_roles and (not miss_ch):
+        return await interaction.response.send_message('✅ Nothing is missing. Everything in that backup still exists.', ephemeral=True)
+    lines = [f"role  {r['name']}" for r in miss_roles] + [f"{c['kind']:<8} {c['name']}" for c in miss_ch]
+    shown = '\n'.join(lines[:30]) + (f'\n… and {len(lines) - 30} more' if len(lines) > 30 else '')
+    e = discord.Embed(title='♻️ Restore preview', description=f"Backup from <t:{int(rec['ts'])}:f>\n```{shown[:3500]}```", color=discord.Color.blurple())
+    e.set_footer(text="I only recreate what's missing. Nothing is deleted or overwritten.")
+    await interaction.response.send_message(embed=e, view=RestoreConfirm(interaction.user.id, miss_roles, miss_ch), ephemeral=True)
+STATUS_STATES = {'undetected': ('🟢', 'Undetected'), 'updating': ('🟡', 'Updating'), 'detected': ('🔴', 'Detected'), 'down': ('⚫', 'Down')}
+
+def status_cfg():
+    c = data.setdefault('status', {})
+    for k, v in (('channel', 0), ('message', 0), ('role', 0)):
+        c.setdefault(k, v)
+    c.setdefault('items', {})
+    return c
+
+def status_embed(guild):
+    c = status_cfg()
+    e = discord.Embed(title=f'📊 {BUSINESS_NAME} Product Status', color=PANEL_COLOR, timestamp=discord.utils.utcnow())
+    for cat, items in PRODUCTS:
+        lines = []
+        for n, p in items:
+            st = c['items'].get(n)
+            if st and st['state'] in STATUS_STATES:
+                emoji, label = STATUS_STATES[st['state']]
+                lines.append(f'{emoji} **{n}** — {label}' + (f" ({st['note']})" if st.get('note') else ''))
+            else:
+                lines.append(f'⚪ **{n}** — Not set')
+        e.add_field(name=f'◆ {cat}', value='\n'.join(lines)[:1024], inline=False)
+    e.add_field(name='Legend', value='🟢 Undetected · 🟡 Updating · 🔴 Detected · ⚫ Down', inline=False)
+    if guild and guild.icon:
+        e.set_thumbnail(url=guild.icon.url)
+    e.set_footer(text='Last updated')
+    return e
+
+async def refresh_status_board(guild):
+    c = status_cfg()
+    ch = guild.get_channel(c['channel']) if c['channel'] else None
+    if ch is None or not c['message']:
+        return False
+    try:
+        msg = await ch.fetch_message(c['message'])
+        await msg.edit(embed=status_embed(guild))
+        return True
+    except discord.HTTPException:
+        return False
+
+async def status_target_autocomplete(interaction: discord.Interaction, current: str):
+    cur = current.lower()
+    names = ['ALL PRODUCTS'] + [f'Category: {cat}' for cat, _ in PRODUCTS] + [n for n, p in all_products()]
+    return [app_commands.Choice(name=n[:100], value=n[:100]) for n in names if cur in n.lower()][:25]
+
+@bot.tree.command(name='status', description='See which products are working right now')
+async def status_cmd(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=status_embed(interaction.guild))
+
+@bot.tree.command(name='setstatus', description='Set the status of a product, a category or everything (staff)')
+@app_commands.describe(product='A product, "ALL PRODUCTS" or a category', state='New status', note='Short note, like "update ETA 2h" (optional)')
+@app_commands.autocomplete(product=status_target_autocomplete)
+@app_commands.choices(state=[app_commands.Choice(name=f'{e} {l}', value=k) for k, (e, l) in STATUS_STATES.items()])
+@staff_only()
+async def setstatus(interaction: discord.Interaction, product: str, state: app_commands.Choice[str], note: Optional[app_commands.Range[str, 1, 60]]=None):
+    if product.strip().upper() == 'ALL PRODUCTS':
+        names = [n for n, p in all_products()]
+    elif product.lower().startswith('category:'):
+        cat = product.split(':', 1)[1].strip().lower()
+        names = [n for c, items in PRODUCTS if c.lower() == cat for n, p in items]
+    else:
+        hit = find_product(product)
+        names = [hit[0]] if hit else []
+    if not names:
+        return await interaction.response.send_message("I couldn't find that product. Pick one from the list that appears as you type.", ephemeral=True)
+    c = status_cfg()
+    changed = []
+    for n in names:
+        old = c['items'].get(n, {}).get('state')
+        c['items'][n] = {'state': state.value, 'note': note or '', 'ts': time.time()}
+        if old != state.value:
+            changed.append(n)
+    save_data()
+    await refresh_status_board(interaction.guild)
+    ch = interaction.guild.get_channel(c['channel']) if c['channel'] else None
+    if ch is not None and changed:
+        emoji, label = STATUS_STATES[state.value]
+        who = changed[0] if len(changed) == 1 else f'{len(changed)} products'
+        listing = '' if len(changed) == 1 else '\n' + '\n'.join((f'• {n}' for n in changed[:12]))
+        ping = f"<@&{c['role']}> " if c['role'] and state.value != 'undetected' else ''
+        try:
+            await ch.send(f'{ping}{emoji} **{who}** is now **{label}**' + (f' ({note})' if note else '') + listing, allowed_mentions=discord.AllowedMentions(roles=True))
+        except discord.HTTPException:
+            pass
+    await interaction.response.send_message(f'✅ Set **{len(names)}** product(s) to {STATUS_STATES[state.value][0]} {STATUS_STATES[state.value][1]}.', ephemeral=True)
+
+@bot.tree.command(name='statusboard', description='Post a live status board that updates itself (admin)')
+@app_commands.describe(channel='Where to post the board', alert_role='Role to ping when a product goes Updating / Detected / Down (optional)')
+@app_commands.checks.has_permissions(administrator=True)
+async def statusboard(interaction: discord.Interaction, channel: discord.TextChannel, alert_role: Optional[discord.Role]=None):
+    perms = channel.permissions_for(interaction.guild.me)
+    if not (perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {channel.mention}.', ephemeral=True)
+    c = status_cfg()
+    try:
+        msg = await channel.send(embed=status_embed(interaction.guild))
+    except discord.HTTPException:
+        return await interaction.response.send_message("I couldn't post there.", ephemeral=True)
+    c.update(channel=channel.id, message=msg.id, role=alert_role.id if alert_role else 0)
+    save_data()
+    await interaction.response.send_message(f'✅ Status board posted in {channel.mention}. Use `/setstatus` to update it.', ephemeral=True)
+BL_MODES = {'alert': 'Alert staff only', 'kick': 'Kick them', 'ban': 'Ban them'}
+
+class Blacklist(commands.GroupCog, name='blacklist'):
+
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+
+    def table(self):
+        return self.bot.data.setdefault('blacklist', {})
+
+    def mode(self):
+        return self.bot.data.setdefault('blacklist_mode', 'alert')
+
+    async def alert(self, guild, text):
+        log = self.bot.get_channel(MOD_LOG_CHANNEL_ID or LOG_CHANNEL_ID)
+        if log:
+            try:
+                await log.send(embed=discord.Embed(title='⛔ Blacklist', description=text, color=discord.Color.red()))
+            except discord.HTTPException:
+                pass
+
+    async def enforce(self, member):
+        rec = self.table().get(str(member.id))
+        if rec is None or member.bot:
+            return
+        mode, done = (self.mode(), 'Alerted staff')
+        try:
+            if mode == 'ban':
+                await member.ban(reason=f"Blacklist: {rec['reason']}")
+                done = 'Banned'
+            elif mode == 'kick':
+                await member.kick(reason=f"Blacklist: {rec['reason']}")
+                done = 'Kicked'
+        except discord.HTTPException:
+            done = "Couldn't act (check my permissions and role position)"
+        await self.alert(member.guild, f"{member.mention} (`{member.id}`) is on the blacklist.\n**Reason:** {rec['reason']}\n**Action:** {done}")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        await self.enforce(member)
+
+    @app_commands.command(name='add', description='Add someone to the blacklist (staff)')
+    @app_commands.describe(user='The user (works even if they left)', reason='Why (scammer, chargeback, leaker...)')
+    @staff_only()
+    async def add(self, interaction: discord.Interaction, user: discord.User, reason: app_commands.Range[str, 1, 200]):
+        if user.id == interaction.user.id or user.bot:
+            return await interaction.response.send_message("You can't blacklist that account.", ephemeral=True)
+        member = interaction.guild.get_member(user.id)
+        if member is not None and is_staff(member):
+            return await interaction.response.send_message("You can't blacklist a staff member.", ephemeral=True)
+        self.table()[str(user.id)] = {'reason': reason, 'by': interaction.user.id, 'ts': time.time()}
+        self.bot.save_data()
+        note = ''
+        if member is not None and self.mode() != 'alert':
+            await self.enforce(member)
+            note = f' Action taken: **{BL_MODES[self.mode()]}**.'
+        await interaction.response.send_message(f'⛔ Blacklisted {user.mention}. They can no longer open tickets.{note}', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        await self.bot.mod_log(interaction.guild, '⛔ Blacklisted', interaction.user, user, reason, discord.Color.red())
+
+    @app_commands.command(name='remove', description='Remove someone from the blacklist (staff)')
+    @staff_only()
+    async def remove(self, interaction: discord.Interaction, user: discord.User):
+        if self.table().pop(str(user.id), None) is None:
+            return await interaction.response.send_message("They aren't on the blacklist.", ephemeral=True)
+        self.bot.save_data()
+        await interaction.response.send_message(f'✅ Removed {user.mention} from the blacklist.', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='check', description='Check if someone is blacklisted (staff)')
+    @staff_only()
+    async def check(self, interaction: discord.Interaction, user: discord.User):
+        rec = self.table().get(str(user.id))
+        if rec is None:
+            return await interaction.response.send_message(f'✅ {user.mention} is **not** blacklisted.', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        await interaction.response.send_message(f"⛔ {user.mention} is **blacklisted**\n**Reason:** {rec['reason']}\n**Added by:** <@{rec['by']}> <t:{int(rec['ts'])}:R>", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='list', description='Show everyone on the blacklist (staff)')
+    @staff_only()
+    async def list_bl(self, interaction: discord.Interaction):
+        t = self.table()
+        if not t:
+            return await interaction.response.send_message('The blacklist is empty.', ephemeral=True)
+        lines = [f"<@{uid}> · {r['reason'][:70]}" for uid, r in list(t.items())[:40]]
+        await interaction.response.send_message(embed=discord.Embed(title=f'⛔ Blacklist ({len(t)})', description='\n'.join(lines)[:3900], color=discord.Color.red()), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='mode', description='What happens when a blacklisted person joins (staff)')
+    @app_commands.choices(action=[app_commands.Choice(name=v, value=k) for k, v in BL_MODES.items()])
+    @staff_only()
+    async def set_mode(self, interaction: discord.Interaction, action: app_commands.Choice[str]):
+        self.bot.data['blacklist_mode'] = action.value
+        self.bot.save_data()
+        note = '' if self.bot.intents.members else '\n⚠️ Join detection needs Server Members Intent (`MEMBERS_INTENT=1`). Ticket blocking works either way.'
+        await interaction.response.send_message(f'✅ When a blacklisted person joins: **{action.name}**.{note}', ephemeral=True)
+PRIORITIES = {'low': ('🟢', 'Low'), 'normal': ('', 'Normal'), 'high': ('🟠', 'High'), 'urgent': ('🔴', 'Urgent')}
+AUTOCLOSE_GRACE = 12 * 3600
+
+def tmeta(channel_id):
+    return data.setdefault('tickets_meta', {}).setdefault(str(channel_id), {})
+
+async def ticket_only(interaction):
+    ch = interaction.channel
+    if not (isinstance(ch, discord.TextChannel) and is_ticket(ch)):
+        await interaction.response.send_message('Use this inside a ticket channel.', ephemeral=True)
+        return None
+    return ch
+
+class TicketTools(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    async def cog_load(self):
+        self.sweep.start()
+
+    async def cog_unload(self):
+        self.sweep.cancel()
+
+    @app_commands.command(name='claim', description='Claim this ticket (staff)')
+    @staff_only()
+    async def claim(self, interaction: discord.Interaction):
+        ch = await ticket_only(interaction)
+        if ch is None:
+            return
+        meta = tmeta(ch.id)
+        if meta.get('claimed_by') and meta['claimed_by'] != interaction.user.id:
+            return await interaction.response.send_message(f"Already claimed by <@{meta['claimed_by']}>. Ask them to `/transfer` it, or use `/unclaim` if they're gone.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        meta['claimed_by'] = interaction.user.id
+        save_data()
+        await interaction.response.send_message(embed=discord.Embed(description=f'🙋 {interaction.user.mention} claimed this ticket and will help you from here.', color=discord.Color.green()))
+
+    @app_commands.command(name='unclaim', description='Release this ticket so another staff member can take it (staff)')
+    @staff_only()
+    async def unclaim(self, interaction: discord.Interaction):
+        ch = await ticket_only(interaction)
+        if ch is None:
+            return
+        meta = tmeta(ch.id)
+        if not meta.pop('claimed_by', None):
+            return await interaction.response.send_message("This ticket isn't claimed.", ephemeral=True)
+        save_data()
+        await interaction.response.send_message(embed=discord.Embed(description=f'↩️ {interaction.user.mention} released this ticket. Any staff member can claim it.', color=discord.Color.orange()))
+
+    @app_commands.command(name='transfer', description='Hand this ticket to another staff member (staff)')
+    @staff_only()
+    async def transfer(self, interaction: discord.Interaction, member: discord.Member):
+        ch = await ticket_only(interaction)
+        if ch is None:
+            return
+        if member.bot or not is_staff(member):
+            return await interaction.response.send_message('Pick a staff member.', ephemeral=True)
+        tmeta(ch.id)['claimed_by'] = member.id
+        save_data()
+        await interaction.response.send_message(f'🔁 {interaction.user.mention} transferred this ticket to {member.mention}.', allowed_mentions=discord.AllowedMentions(users=[member]))
+
+    @app_commands.command(name='rename', description='Rename this ticket channel (staff)')
+    @staff_only()
+    async def rename(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 90]):
+        ch = await ticket_only(interaction)
+        if ch is None:
+            return
+        new = re.sub('[\\s_]+', '-', name.strip().lower())
+        try:
+            await ch.edit(name=new, reason=f'Renamed by {interaction.user}')
+        except discord.HTTPException:
+            return await interaction.response.send_message("I couldn't rename it. Discord only allows 2 renames per 10 minutes per channel.", ephemeral=True)
+        await interaction.response.send_message(f'✅ Renamed to **{new}**.', ephemeral=True)
+
+    @app_commands.command(name='priority', description='Mark how urgent this ticket is (staff)')
+    @app_commands.choices(level=[app_commands.Choice(name=f'{e} {l}'.strip(), value=k) for k, (e, l) in PRIORITIES.items()])
+    @staff_only()
+    async def priority(self, interaction: discord.Interaction, level: app_commands.Choice[str]):
+        ch = await ticket_only(interaction)
+        if ch is None:
+            return
+        base = re.sub('^(🟢|🟠|🔴)-?', '', ch.name)
+        emoji = PRIORITIES[level.value][0]
+        tmeta(ch.id)['priority'] = level.value
+        save_data()
+        await interaction.response.defer()
+        renamed = True
+        try:
+            await ch.edit(name=f'{emoji}-{base}' if emoji else base, reason=f'Priority set by {interaction.user}')
+        except discord.HTTPException:
+            renamed = False
+        await interaction.followup.send(embed=discord.Embed(description=f"{emoji or '⚪'} Priority set to **{PRIORITIES[level.value][1]}** by {interaction.user.mention}." + ('' if renamed else '\n(I could not change the channel name right now.)'), color=discord.Color.orange() if level.value in ('high', 'urgent') else discord.Color.blurple()))
+
+    def acfg(self):
+        c = self.bot.data.setdefault('autoclose', {})
+        c.setdefault('enabled', False)
+        c.setdefault('hours', 24)
+        return c
+
+    @app_commands.command(name='autoclose', description='Close tickets that go quiet. Warns first, then closes (staff)')
+    @app_commands.describe(hours='How long a ticket can be quiet before the warning', state='Turn it on or off')
+    @app_commands.choices(hours=[app_commands.Choice(name=f'{h} hours', value=h) for h in (12, 24, 48, 72)], state=[app_commands.Choice(name='On', value='on'), app_commands.Choice(name='Off', value='off')])
+    @staff_only()
+    async def autoclose(self, interaction: discord.Interaction, state: app_commands.Choice[str], hours: Optional[app_commands.Choice[int]]=None):
+        c = self.acfg()
+        c['enabled'] = state.value == 'on'
+        if hours:
+            c['hours'] = hours.value
+        self.bot.save_data()
+        if c['enabled']:
+            msg = f"⏳ Auto-close is **ON**. Tickets quiet for **{c['hours']} hours** get a warning, then close 12 hours later if nobody replies. A transcript is saved first."
+        else:
+            msg = '⏳ Auto-close is **OFF**.'
+        await interaction.response.send_message(msg, ephemeral=True)
+
+    async def close_quiet(self, ch):
+        text = await build_transcript(ch)
+        log = self.bot.get_channel(LOG_CHANNEL_ID)
+        if log:
+            await log.send(f'Transcript for **{ch.name}** (auto-closed, no activity)', file=transcript_file(text, ch.name))
+        owner = await get_owner(ch.guild, ch)
+        if owner:
+            try:
+                await owner.send("Your ticket was closed because it went quiet. Here's the transcript. You can open a new ticket any time:", file=transcript_file(text, ch.name), view=ReviewView())
+            except discord.HTTPException:
+                pass
+        self.bot.data.get('tickets_meta', {}).pop(str(ch.id), None)
+        await ch.delete(reason='Auto-closed: no activity')
+
+    @tasks.loop(minutes=10)
+    async def sweep(self):
+        c = self.acfg()
+        if not c['enabled']:
+            return
+        now = discord.utils.utcnow()
+        for guild in self.bot.guilds:
+            for ch in guild.text_channels:
+                if not is_ticket(ch):
+                    continue
+                try:
+                    meta = tmeta(ch.id)
+                    last = discord.utils.snowflake_time(ch.last_message_id) if ch.last_message_id else ch.created_at
+                    idle = (now - last).total_seconds()
+                    warn = meta.get('warn')
+                    if warn and ch.last_message_id and (ch.last_message_id != warn):
+                        meta.pop('warn', None)
+                        self.bot.save_data()
+                    elif warn:
+                        if idle >= AUTOCLOSE_GRACE:
+                            await self.close_quiet(ch)
+                    elif idle >= c['hours'] * 3600:
+                        msg = await ch.send(f'<@{ch.topic}> ⏳ This ticket has been quiet for a while. It will **close automatically in 12 hours** unless someone replies.', allowed_mentions=discord.AllowedMentions(users=True))
+                        meta['warn'] = msg.id
+                        self.bot.save_data()
+                except discord.HTTPException as ex:
+                    print(f'[autoclose] {ch.name}: {ex!r}')
+
+    @sweep.before_loop
+    async def before_sweep(self):
+        await self.bot.wait_until_ready()
 bot.run(os.getenv('DISCORD_TOKEN'))
