@@ -686,7 +686,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
-    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /partnership · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Server', value='/scamguard · /mediapanel · /fixchannels · /partnership · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -3003,7 +3003,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+PERM_BY_CMD = {'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -3226,4 +3226,166 @@ async def partnership(interaction: discord.Interaction, channel: Optional[discor
     except discord.HTTPException:
         return await interaction.response.send_message(f"I couldn't post in {ch.mention}.", ephemeral=True)
     await interaction.response.send_message(f'✅ Partnership ad posted in {ch.mention}.', ephemeral=True)
+FIX_STYLES = {'dot': '・', 'bar': '┃', 'arrow': '»', 'dash': '-'}
+FIX_EMOJI = [(('rules', 'guidelines'), '📜'), (('welcome', 'start-here', 'arrivals'), '👋'), (('announcement', 'announce', 'news', 'update', 'changelog'), '📢'), (('verify', 'verification'), '✅'), (('log', 'logs', 'transcript', 'audit'), '📋'), (('ticket', 'support', 'help', 'contact'), '🎫'), (('vouch', 'review', 'feedback', 'testimonial'), '⭐'), (('giveaway', 'drop'), '🎉'), (('product', 'shop', 'store', 'pricing', 'price', 'purchase', 'buy'), '🛒'), (('restock', 'stock'), '📦'), (('status', 'uptime'), '🟢'), (('media', 'clips', 'showcase', 'content', 'creator'), '🎥'), (('suggest',), '💡'), (('faq', 'questions'), '❓'), (('partner',), '🤝'), (('booster', 'boost'), '💎'), (('staff', 'mod', 'admin', 'team'), '🛡️'), (('bot', 'command', 'cmd'), '🤖'), (('meme', 'funny'), '😂'), (('gaming', 'game', 'fortnite', 'valorant', 'r6', 'fivem'), '🎮'), (('music',), '🎵'), (('selfie', 'pics', 'photo', 'image'), '📷'), (('intro',), '🙋'), (('role', 'reaction'), '🏷️'), (('invite',), '🔗'), (('leaderboard',), '🏆'), (('poll',), '📊'), (('apply', 'application'), '📝'), (('payment', 'pay'), '💳'), (('refund',), '↩️'), (('tos', 'terms'), '📄'), (('referral', 'refer'), '🤝'), (('general', 'chat', 'lounge', 'talk', 'main', 'off-topic', 'offtopic'), '💬'), (('information', 'info', 'important'), '📌'), (('community', 'social'), '🌍'), (('voice', 'vc'), '🔊')]
+FIX_VOICE = [(('staff', 'mod', 'admin', 'team'), '🛡️'), (('music', 'chill', 'radio'), '🎵'), (('gaming', 'game', 'fortnite', 'valorant', 'r6', 'fivem'), '🎮'), (('support', 'help', 'ticket'), '🎧'), (('afk', 'sleep'), '😴')]
+FIX_PRIORITY = [(('information', 'info', 'welcome', 'start', 'important', 'rules', 'announce'), 0), (('community', 'general', 'chat', 'social', 'lounge', 'main'), 1), (('shop', 'store', 'product', 'sales', 'purchase', 'customer', 'order'), 2), (('support', 'help', 'ticket'), 3), (('media', 'content', 'creator', 'showcase'), 4), (('voice', 'vc'), 6), (('staff', 'admin', 'mod', 'team'), 8), (('log', 'archive', 'transcript'), 9)]
+FIX_DEFAULT = {'category': '📁', 'text': '💬', 'voice': '🔊', 'stage': '🎤', 'forum': '📚', 'news': '📢'}
+
+def fix_match(base, table, default):
+    low = base.lower()
+    tokens = set(re.split('[^a-z0-9]+', low))
+    for words, value in table:
+        for w in words:
+            if w in tokens or (len(w) >= 4 and w in low):
+                return value
+    return default
+
+def fix_kind(ch):
+    if isinstance(ch, discord.CategoryChannel):
+        return 'category'
+    if isinstance(ch, discord.VoiceChannel):
+        return 'voice'
+    if isinstance(ch, discord.StageChannel):
+        return 'stage'
+    if isinstance(ch, discord.ForumChannel):
+        return 'forum'
+    if isinstance(ch, discord.TextChannel):
+        return 'news' if ch.is_news() else 'text'
+    return None
+
+def fix_new_name(ch, sep):
+    kind = fix_kind(ch)
+    if kind is None:
+        return None
+    lead = re.match('^[^\\w]+', ch.name)
+    run = lead.group(0) if lead else ''
+    keep = ''.join((c for c in run if ord(c) > 127 and c not in '・┃│»—•–'))
+    base = ch.name[len(run):].strip(' -_|·') if run else ch.name
+    if not base:
+        return None
+    emoji = keep or fix_match(base, FIX_VOICE if kind in ('voice', 'stage') else FIX_EMOJI, FIX_DEFAULT[kind])
+    if kind == 'category':
+        return f"{emoji} {re.sub('[-_]+', ' ', base).upper()}"[:100]
+    if kind in ('voice', 'stage'):
+        return f"{emoji}{sep}{re.sub('[-_]+', ' ', base).title()}"[:100]
+    return f"{emoji}{sep}{re.sub('[\\s_]+', '-', base.lower()).strip('-')}"[:100]
+
+def fix_plan(guild, sep, reorder):
+    skip_cat = guild.get_channel(CATEGORY_ID) if CATEGORY_ID else None
+    plan = []
+    for ch in guild.channels:
+        if isinstance(ch, discord.TextChannel) and ch.topic and ch.topic.isdigit():
+            continue
+        if skip_cat is not None and getattr(ch, 'category_id', None) == skip_cat.id:
+            continue
+        new = fix_new_name(ch, sep)
+        if new and new != ch.name:
+            plan.append((ch.id, ch.name, new))
+    order = []
+    if reorder:
+        cats = sorted(guild.categories, key=lambda c: c.position)
+        ranked = sorted(cats, key=lambda c: fix_match(c.name, FIX_PRIORITY, 5))
+        order = [(c.id, c.position, i) for i, c in enumerate(ranked) if cats[i].id != c.id]
+    return (plan, order)
+
+async def fix_apply(guild, plan, order, user, progress=None):
+    snap = {'names': {str(i): old for i, old, new in plan}, 'positions': {}, 'ts': time.time()}
+    ok, failed = (0, [])
+    for n, (cid, old, new) in enumerate(plan, 1):
+        ch = guild.get_channel(cid)
+        try:
+            if ch is not None:
+                await ch.edit(name=new, reason=f'/fixchannels by {user}')
+                ok += 1
+        except discord.HTTPException:
+            failed.append(old)
+        if progress and n % 8 == 0:
+            await progress(n, len(plan))
+    for cid, pos, i in order:
+        snap['positions'][str(cid)] = pos
+    for cid, pos, i in sorted(order, key=lambda o: o[2]):
+        cat = guild.get_channel(cid)
+        try:
+            if cat is not None:
+                await cat.edit(position=i, reason=f'/fixchannels by {user}')
+        except discord.HTTPException:
+            pass
+    data['fixchannels'] = snap
+    save_data()
+    return (ok, failed)
+
+class FixConfirm(discord.ui.View):
+
+    def __init__(self, user_id, plan, order):
+        super().__init__(timeout=180)
+        self.user_id, self.plan, self.order = (user_id, plan, order)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return interaction.user.id == self.user_id
+
+    @discord.ui.button(label='Apply changes', emoji='✨', style=discord.ButtonStyle.success)
+    async def go(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content=f'⏳ Renaming {len(self.plan)} channels. This can take a minute...', embed=None, view=None)
+
+        async def progress(n, total):
+            await interaction.edit_original_response(content=f'⏳ Renaming... {n}/{total}')
+        ok, failed = await fix_apply(interaction.guild, self.plan, self.order, interaction.user, progress)
+        text = f'✅ Done! Renamed **{ok}** channels' + (' and reordered the categories' if self.order else '') + '. Use `/fixchannels-undo` to restore the old names.'
+        if failed:
+            text += f"\n⚠️ I couldn't rename: {', '.join(failed[:10])} (check my Manage Channels permission and role position)."
+        await interaction.edit_original_response(content=text)
+        self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content='Cancelled. Nothing was changed.', embed=None, view=None)
+        self.stop()
+
+@bot.tree.command(name='fixchannels', description='Tidy channel names with emojis and a clean style (admin)')
+@app_commands.describe(style='How names look', reorder_categories='Also put categories in a standard order (info, community, shop, support...)')
+@app_commands.choices(style=[app_commands.Choice(name='💬・general (dot)', value='dot'), app_commands.Choice(name='💬┃general (bar)', value='bar'), app_commands.Choice(name='💬»general (arrow)', value='arrow'), app_commands.Choice(name='💬-general (dash)', value='dash')])
+@app_commands.checks.has_permissions(administrator=True)
+async def fixchannels(interaction: discord.Interaction, style: Optional[app_commands.Choice[str]]=None, reorder_categories: bool=False):
+    g = interaction.guild
+    if not g.me.guild_permissions.manage_channels:
+        return await interaction.response.send_message('I need the **Manage Channels** permission first.', ephemeral=True)
+    plan, order = fix_plan(g, FIX_STYLES[style.value if style else 'dot'], reorder_categories)
+    if not plan and (not order):
+        return await interaction.response.send_message('✨ Your channels already look clean. Nothing to change.', ephemeral=True)
+    lines = [f'{old}  →  {new}' for _, old, new in plan]
+    shown = '\n'.join(lines[:25])
+    if len(lines) > 25:
+        shown += f'\n… and {len(lines) - 25} more'
+    e = discord.Embed(title='✨ Channel makeover preview', description=f'```{shown[:3800]}```', color=discord.Color.blurple())
+    e.add_field(name='Changes', value=f'**{len(plan)}** channels renamed' + (f'\n**{len(order)}** categories moved' if order else ''), inline=False)
+    e.set_footer(text='I never delete channels, and ticket channels are skipped. Existing emojis are kept. /fixchannels-undo restores everything.')
+    await interaction.response.send_message(embed=e, view=FixConfirm(interaction.user.id, plan, order), ephemeral=True)
+
+@bot.tree.command(name='fixchannels-undo', description='Restore the channel names from before the last /fixchannels (admin)')
+@app_commands.checks.has_permissions(administrator=True)
+async def fixchannels_undo(interaction: discord.Interaction):
+    snap = data.get('fixchannels')
+    if not snap:
+        return await interaction.response.send_message('Nothing to undo.', ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    g, ok = (interaction.guild, 0)
+    for cid, old in snap['names'].items():
+        ch = g.get_channel(int(cid))
+        try:
+            if ch is not None and ch.name != old:
+                await ch.edit(name=old, reason=f'/fixchannels-undo by {interaction.user}')
+                ok += 1
+        except discord.HTTPException:
+            pass
+    for cid, pos in snap['positions'].items():
+        ch = g.get_channel(int(cid))
+        try:
+            if ch is not None:
+                await ch.edit(position=pos, reason=f'/fixchannels-undo by {interaction.user}')
+        except discord.HTTPException:
+            pass
+    data.pop('fixchannels', None)
+    save_data()
+    await interaction.followup.send(f'↩️ Restored **{ok}** channel names' + (' and the category order.' if snap['positions'] else '.'), ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
