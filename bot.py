@@ -37,11 +37,13 @@ def load_data():
     for k, v in DEFAULTS.items():
         d.setdefault(k, copy.deepcopy(v))
     return d
+backup_state = {'restored': os.path.exists(DATA_FILE), 'dirty': False, 'msg_id': 0, 'last': 0, 'error': ''}
 
 def save_data():
     os.makedirs(os.path.dirname(os.path.abspath(DATA_FILE)), exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
+    backup_state['dirty'] = True
 data = load_data()
 
 class MyBot(commands.Bot):
@@ -67,6 +69,7 @@ class MyBot(commands.Bot):
         await self.add_cog(ScamGuard(self))
         await self.add_cog(Blacklist(self))
         await self.add_cog(TicketTools(self))
+        await self.add_cog(DataBackup(self))
         apply_visibility(self.tree)
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
@@ -691,7 +694,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
     e.add_field(name='◆ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
-    e.add_field(name='◆ Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /blacklist · /backup · /restore (staff)', inline=False)
+    e.add_field(name='◆ Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
     e.add_field(name='◆ Server Tools', value='/scamguard · /mediapanel · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
@@ -3014,7 +3017,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+PERM_BY_CMD = {'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -4009,4 +4012,138 @@ class TicketTools(commands.Cog):
     @sweep.before_loop
     async def before_sweep(self):
         await self.bot.wait_until_ready()
+BACKUP_CHANNEL_ID = int(os.getenv('BACKUP_CHANNEL_ID', '0')) or LOG_CHANNEL_ID
+BACKUP_NAME = 'frontline-data-backup.json'
+
+async def find_backup_message(ch):
+    me = bot.user.id
+
+    def ok(m):
+        return m.author.id == me and any((a.filename == BACKUP_NAME for a in m.attachments))
+    try:
+        it = ch.pins()
+        pins = [m async for m in it] if hasattr(it, '__aiter__') else await it
+        for m in pins:
+            if ok(m):
+                return m
+        async for m in ch.history(limit=300):
+            if ok(m):
+                return m
+    except discord.HTTPException:
+        pass
+    return None
+
+async def restore_from_backup():
+    ch = bot.get_channel(BACKUP_CHANNEL_ID)
+    if ch is None:
+        backup_state['error'] = 'backup channel not found'
+        return False
+    msg = await find_backup_message(ch)
+    if msg is None:
+        return False
+    att = next((a for a in msg.attachments if a.filename == BACKUP_NAME))
+    restored = json.loads((await att.read()).decode('utf-8'))
+    if not isinstance(restored, dict):
+        raise ValueError('backup is not a settings file')
+    data.clear()
+    data.update(restored)
+    for k, v in DEFAULTS.items():
+        data.setdefault(k, copy.deepcopy(v))
+    save_data()
+    backup_state.update(dirty=False, msg_id=msg.id)
+    return True
+
+async def upload_backup():
+    ch = bot.get_channel(BACKUP_CHANNEL_ID)
+    if ch is None:
+        backup_state['error'] = 'backup channel not found'
+        return False
+    raw = json.dumps(data, indent=1).encode('utf-8')
+    if len(raw) > 7000000:
+        backup_state['error'] = 'settings file is too big to back up'
+        return False
+    file = discord.File(io.BytesIO(raw), filename=BACKUP_NAME)
+    content = f'💾 Settings backup. Do not delete this message. Updated <t:{int(time.time())}:R>'
+    msg = None
+    if backup_state['msg_id']:
+        try:
+            msg = await ch.fetch_message(backup_state['msg_id'])
+        except discord.HTTPException:
+            msg = None
+    if msg is None:
+        msg = await find_backup_message(ch)
+    try:
+        if msg is not None:
+            await msg.edit(content=content, attachments=[file])
+        else:
+            msg = await ch.send(content, file=file)
+            try:
+                await msg.pin()
+            except discord.HTTPException:
+                pass
+    except discord.HTTPException as ex:
+        backup_state['error'] = f'Discord refused the backup: {ex.text}'
+        return False
+    backup_state.update(msg_id=msg.id, last=time.time(), error='', dirty=False)
+    return True
+
+class DataBackup(commands.Cog):
+    """Keeps a copy of all settings in Discord so a redeploy never wipes them."""
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.started = False
+
+    async def cog_load(self):
+        self.flush.start()
+
+    async def cog_unload(self):
+        self.flush.cancel()
+        if backup_state['restored'] and backup_state['dirty']:
+            try:
+                await upload_backup()
+            except Exception as ex:
+                print(f'[backup] final save failed: {ex!r}')
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self.started:
+            return
+        self.started = True
+        if not backup_state['restored']:
+            try:
+                if await restore_from_backup():
+                    print('[backup] restored settings from the Discord backup')
+                else:
+                    print('[backup] no earlier backup found, starting fresh')
+            except Exception as ex:
+                backup_state['error'] = f'restore failed: {ex!r}'
+                print(f'[backup] restore failed: {ex!r}')
+            backup_state['restored'] = True
+        backup_state['dirty'] = True
+
+    @tasks.loop(seconds=60)
+    async def flush(self):
+        if backup_state['restored'] and backup_state['dirty']:
+            try:
+                await upload_backup()
+            except Exception as ex:
+                backup_state['error'] = repr(ex)
+                print(f'[backup] {ex!r}')
+
+    @flush.before_loop
+    async def before_flush(self):
+        await self.bot.wait_until_ready()
+
+@bot.tree.command(name='savedata', description='Back up all bot settings to Discord right now (admin)')
+@app_commands.checks.has_permissions(administrator=True)
+async def savedata(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    ok = await upload_backup()
+    ch = bot.get_channel(BACKUP_CHANNEL_ID)
+    where = ch.mention if ch else 'the backup channel'
+    if ok:
+        await interaction.followup.send(f'💾 Saved all settings to {where}. After a redeploy the bot loads them back automatically.', ephemeral=True)
+    else:
+        await interaction.followup.send(f"❌ Backup failed: {backup_state['error'] or 'unknown error'}. I need **View Channel**, **Send Messages**, **Attach Files** and **Read Message History** in {where}.", ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
