@@ -249,8 +249,8 @@ async def vouchstats(interaction: discord.Interaction):
     e.add_field(name='Total vouches', value=str(count))
     e.add_field(name='Average rating', value=f'{avg:.2f} / 5 ⭐')
     await interaction.response.send_message(embed=e)
-TICKET_TYPES = {'support': ('Support', '⚙️'), 'purchase': ('Purchase', '💰'), 'media': ('Media Application', '📷'), 'reseller': ('Reseller', '💳'), 'product': ('Product Support', '🛒'), 'general': ('General Support', '💬'), 'other': ('Other', '❓')}
-DROPDOWN_OPTIONS = [('support', 'Support', '⚙️'), ('purchase', 'Purchase Now', '💰'), ('media', 'Media', '📷'), ('reseller', 'Resell', '💳'), ('website', 'Website', '🌐'), ('product', 'Product Support', '🛒'), ('general', 'General Support', '💬'), ('other', 'Other', '❓')]
+TICKET_TYPES = {'support': ('Support', '⚙️'), 'purchase': ('Purchase', '💰'), 'media': ('Media Application', '📷'), 'reseller': ('Reseller', '💳'), 'product': ('Product Support', '🛒'), 'general': ('General Support', '💬'), 'staffreport': ('Staff Report', '🚨'), 'other': ('Other', '❓')}
+DROPDOWN_OPTIONS = [('support', 'Support', '⚙️'), ('purchase', 'Purchase Now', '💰'), ('media', 'Media', '📷'), ('reseller', 'Resell', '💳'), ('website', 'Website', '🌐'), ('product', 'Product Support', '🛒'), ('general', 'General Support', '💬'), ('staffreport', 'Staff Report', '🚨'), ('other', 'Other', '❓')]
 
 async def create_ticket(guild, user, kind):
     """Returns (channel, None) on success or (None, existing_channel)."""
@@ -260,12 +260,23 @@ async def create_ticket(guild, user, kind):
     label, emoji = TICKET_TYPES[kind]
     staff = guild.get_role(STAFF_ROLE_ID)
     overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False), user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True), staff: discord.PermissionOverwrite(view_channel=True, send_messages=True), guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
+    report = kind == 'staffreport'
+    esc = guild.get_role(ESCALATE_ROLE_ID) if ESCALATE_ROLE_ID else None
+    if report:
+        overwrites[staff] = discord.PermissionOverwrite(view_channel=False)
+        if esc is not None:
+            overwrites[esc] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
     category = guild.get_channel(CATEGORY_ID) if CATEGORY_ID else None
     ch = await guild.create_text_channel(f'{kind}-{user.name}', overwrites=overwrites, category=category, topic=str(user.id))
-    e = discord.Embed(title=f'{emoji} {label}', description='Describe your issue and staff will be with you shortly.', color=discord.Color.blurple())
+    if report:
+        who = 'management' if esc is not None else 'the server owner and admins'
+        desc = f'Tell us **which staff member** you are reporting, **what happened**, and include any screenshots or evidence.\n\n🔒 Only {who} can see this ticket. Regular staff cannot.'
+    else:
+        desc = 'Describe your issue and staff will be with you shortly.'
+    e = discord.Embed(title=f'{emoji} {label}', description=desc, color=discord.Color.red() if report else discord.Color.blurple())
     e.add_field(name='Opened by', value=user.mention)
     e.add_field(name='Type', value=label)
-    await ch.send(f'{user.mention} {staff.mention}', embed=e, view=CloseView())
+    await ch.send(f"{user.mention} {((esc.mention if esc is not None else '') if report else staff.mention)}", embed=e, view=CloseView())
     return (ch, None)
 
 class CloseView(discord.ui.View):
@@ -276,18 +287,19 @@ class CloseView(discord.ui.View):
     @discord.ui.button(label='Close Ticket', style=discord.ButtonStyle.danger, custom_id='ticket:close')
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
-        if not (is_staff(interaction.user) or str(interaction.user.id) == channel.topic):
+        higher = bool(ESCALATE_ROLE_ID) and any((r.id == ESCALATE_ROLE_ID for r in interaction.user.roles))
+        if not (is_staff(interaction.user) or higher or str(interaction.user.id) == channel.topic):
             return await interaction.response.send_message('Not allowed.', ephemeral=True)
         await interaction.response.send_message('Closing in 5 seconds, saving transcript...')
         text = await build_transcript(channel)
-        await record_ticket(channel)
+        if not is_report(channel):
+            await record_ticket(channel)
         ai = bot.get_cog('ai')
-        if ai and ai.cfg()['learn'] and GROQ_KEY and channel.topic and channel.topic.isdigit():
+        if ai and ai.cfg()['learn'] and GROQ_KEY and channel.topic and channel.topic.isdigit() and (not is_report(channel)):
             convo = await ai.collect(channel)
             if convo:
                 asyncio.create_task(ai.learn(convo, interaction.guild))
-        log = bot.get_channel(LOG_CHANNEL_ID)
-        await log.send(f'Transcript for **{channel.name}**', file=transcript_file(text, channel.name))
+        await post_transcript(interaction.guild, channel, text)
         owner = await get_owner(interaction.guild, channel)
         if owner:
             try:
@@ -423,13 +435,12 @@ class PurgeTicketsView(discord.ui.View):
         guild = interaction.guild
         tickets = [c for c in guild.text_channels if is_ticket(c)]
         await interaction.response.edit_message(content=f'🗑️ Deleting {len(tickets)} ticket(s)...', view=None)
-        log = bot.get_channel(LOG_CHANNEL_ID)
         deleted = 0
         for c in tickets:
             try:
-                if self.save_transcripts and log:
+                if self.save_transcripts:
                     text = await build_transcript(c)
-                    await log.send(f'Transcript for **{c.name}** (purged)', file=transcript_file(text, c.name))
+                    await post_transcript(guild, c, text, '(purged)')
                 await c.delete(reason=f'Ticket purge by {interaction.user}')
                 deleted += 1
             except discord.HTTPException:
@@ -1854,6 +1865,53 @@ class TicketAI(commands.GroupCog, name='ai'):
         e.set_footer(text=f'The AI only answers the ticket opener. It stays quiet for {AI_STAFF_COOLDOWN // 60} minutes after a staff member replies.')
         await interaction.response.send_message(embed=e, ephemeral=True)
 
+    @app_commands.command(name='check', description="Run inside a ticket: shows why the AI is or isn't answering there (staff)")
+    @staff_only()
+    async def check(self, interaction: discord.Interaction):
+        ch = interaction.channel
+        if not (isinstance(ch, discord.TextChannel) and is_ticket(ch)):
+            return await interaction.response.send_message('Run this inside a ticket channel.', ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        c = self.cfg()
+        rows = []
+
+        def add(ok, good, bad):
+            rows.append('✅ ' + good if ok else '❌ ' + bad)
+        add(bool(GROQ_KEY), 'Groq key is set', 'Groq key is missing (`GROQ_API_KEY` in Railway)')
+        add(self.bot.intents.message_content, 'Message Content Intent is on', 'Message Content Intent is OFF (`MESSAGE_CONTENT=1` in Railway and the toggle in the Developer Portal)')
+        add(c['enabled'], 'AI is enabled', 'AI is turned off. Use `/ai enable`')
+        add(not is_report(ch), 'Not a staff report ticket', 'Staff report tickets never use the AI')
+        claimed = self.bot.data.get('tickets_meta', {}).get(str(ch.id), {}).get('claimed_by')
+        add(not claimed or c['test'], 'Ticket is not claimed', f'Ticket is claimed by <@{claimed}>, so the AI stays quiet. Use `/unclaim`')
+        opener = interaction.guild.get_member(int(ch.topic))
+        if opener is None:
+            try:
+                opener = await interaction.guild.fetch_member(int(ch.topic))
+            except discord.HTTPException:
+                opener = None
+        if opener is None:
+            add(False, '', 'The person who opened this ticket is no longer in the server')
+        else:
+            add(not is_staff(opener) or c['test'], f'Opener {opener.mention} is a regular member', f'Opener {opener.mention} counts as STAFF (has the staff role or Administrator), so the AI ignores them. Test with a normal account, or use `/ai test`')
+        now = discord.utils.utcnow()
+        recent = []
+        try:
+            async for m in ch.history(limit=30):
+                if not m.author.bot and isinstance(m.author, discord.Member) and is_staff(m.author) and ((now - m.created_at).total_seconds() < AI_STAFF_COOLDOWN):
+                    recent.append(m)
+        except discord.HTTPException:
+            pass
+        if recent and (not c['test']):
+            mins = int((now - recent[0].created_at).total_seconds() // 60)
+            add(False, '', f'{recent[0].author.mention} (staff) wrote {mins} min ago. The AI stays quiet until {AI_STAFF_COOLDOWN // 60} minutes after the last staff message')
+        else:
+            add(True, f'No staff message in the last {AI_STAFF_COOLDOWN // 60} minutes', '')
+        add(not c['test'], 'Test mode is off (normal behavior)', 'Test mode is ON (staff get answers). Turn it off with `/ai test`')
+        ok = all((r.startswith('✅') for r in rows[:-1]))
+        e = discord.Embed(title='🔎 AI check for this ticket', description='\n'.join(rows), color=discord.Color.green() if ok else discord.Color.red())
+        e.set_footer(text='If everything is ✅ the AI will answer the ticket opener.' if ok else 'Fix the ❌ items and the AI will answer.')
+        await interaction.followup.send(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
     def learned_text(self):
         items = self.cfg()['learned'][-40:]
         if not items:
@@ -1997,8 +2055,12 @@ class TicketAI(commands.GroupCog, name='ai'):
         if not c['enabled'] or str(message.author.id) != ch.topic:
             return
         if is_staff(message.author) and (not c['test']):
+            print(f'[AI] quiet in {ch.name}: {message.author} counts as staff (staff role or Administrator)')
+            return
+        if is_report(ch):
             return
         if self.bot.data.get('tickets_meta', {}).get(str(ch.id), {}).get('claimed_by') and (not c['test']):
+            print(f'[AI] quiet in {ch.name}: ticket is claimed')
             return
         lock = self.locks.setdefault(ch.id, asyncio.Lock())
         if lock.locked() or time.monotonic() - self.last.get(ch.id, -999) < 4:
@@ -3781,6 +3843,61 @@ class Blacklist(commands.GroupCog, name='blacklist'):
             except discord.HTTPException:
                 pass
 
+    def role_name(self):
+        return 'Frontline | Blacklisted'
+
+    async def apply_overwrites(self, guild, role, hide=False):
+        for ch in guild.channels:
+            if isinstance(ch, discord.TextChannel) and ch.topic and ch.topic.isdigit():
+                continue
+            try:
+                ow = ch.overwrites_for(role)
+                ow.update(send_messages=False, add_reactions=False, create_public_threads=False, create_private_threads=False, send_messages_in_threads=False, speak=False)
+                if isinstance(ch, (discord.VoiceChannel, discord.StageChannel)):
+                    ow.update(connect=False)
+                if hide:
+                    ow.update(view_channel=False)
+                await ch.set_permissions(role, overwrite=ow, reason='Blacklist role setup')
+            except discord.HTTPException:
+                pass
+
+    async def get_role(self, guild, create=True):
+        role = guild.get_role(self.bot.data.get('blacklist_role', 0))
+        if role is None:
+            role = discord.utils.get(guild.roles, name=self.role_name())
+        if role is None and create:
+            role = await guild.create_role(name=self.role_name(), colour=discord.Colour(2895667), permissions=discord.Permissions.none(), reason='Blacklist role')
+            asyncio.create_task(self.apply_overwrites(guild, role))
+        if role is not None and self.bot.data.get('blacklist_role') != role.id:
+            self.bot.data['blacklist_role'] = role.id
+            self.bot.save_data()
+        return role
+
+    async def give_role(self, member):
+        try:
+            role = await self.get_role(member.guild)
+            if role is not None and role not in member.roles:
+                await member.add_roles(role, reason='Blacklisted')
+            return role
+        except discord.HTTPException:
+            return None
+
+    async def take_role(self, guild, user_id):
+        role = await self.get_role(guild, create=False)
+        member = guild.get_member(user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(user_id)
+            except discord.HTTPException:
+                return False
+        if role is not None and role in member.roles:
+            try:
+                await member.remove_roles(role, reason='Removed from blacklist')
+                return True
+            except discord.HTTPException:
+                return False
+        return False
+
     async def enforce(self, member):
         rec = self.table().get(str(member.id))
         if rec is None or member.bot:
@@ -3795,6 +3912,9 @@ class Blacklist(commands.GroupCog, name='blacklist'):
                 done = 'Kicked'
         except discord.HTTPException:
             done = "Couldn't act (check my permissions and role position)"
+        if done in ('Alerted staff', "Couldn't act (check my permissions and role position)"):
+            if await self.give_role(member) is not None:
+                done += ' + gave the blacklist role'
         await self.alert(member.guild, f"{member.mention} (`{member.id}`) is on the blacklist.\n**Reason:** {rec['reason']}\n**Action:** {done}")
 
     @commands.Cog.listener()
@@ -3810,13 +3930,20 @@ class Blacklist(commands.GroupCog, name='blacklist'):
         member = interaction.guild.get_member(user.id)
         if member is not None and is_staff(member):
             return await interaction.response.send_message("You can't blacklist a staff member.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         self.table()[str(user.id)] = {'reason': reason, 'by': interaction.user.id, 'ts': time.time()}
         self.bot.save_data()
         note = ''
-        if member is not None and self.mode() != 'alert':
-            await self.enforce(member)
-            note = f' Action taken: **{BL_MODES[self.mode()]}**.'
-        await interaction.response.send_message(f'⛔ Blacklisted {user.mention}. They can no longer open tickets.{note}', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        if member is not None:
+            if self.mode() != 'alert':
+                await self.enforce(member)
+                note = f' Action taken: **{BL_MODES[self.mode()]}**.'
+            role = await self.give_role(member) if self.mode() == 'alert' else None
+            if role is not None:
+                note += f' They were given {role.mention}.'
+            elif self.mode() == 'alert':
+                note += " ⚠️ I couldn't give the blacklist role (I need **Manage Roles**, and my role must be above it)."
+        await interaction.followup.send(f'⛔ Blacklisted {user.mention}. They can no longer open tickets.{note}', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
         await self.bot.mod_log(interaction.guild, '⛔ Blacklisted', interaction.user, user, reason, discord.Color.red())
 
     @app_commands.command(name='remove', description='Remove someone from the blacklist (staff)')
@@ -3825,7 +3952,28 @@ class Blacklist(commands.GroupCog, name='blacklist'):
         if self.table().pop(str(user.id), None) is None:
             return await interaction.response.send_message("They aren't on the blacklist.", ephemeral=True)
         self.bot.save_data()
-        await interaction.response.send_message(f'✅ Removed {user.mention} from the blacklist.', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        had = await self.take_role(interaction.guild, user.id)
+        await interaction.response.send_message(f'✅ Removed {user.mention} from the blacklist.' + (' Their blacklist role was removed too.' if had else ''), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='role', description='Create or choose the blacklist role and lock it down (staff)')
+    @app_commands.describe(role='Use your own role instead of the default "Frontline | Blacklisted" (optional)', hide_channels='Also hide every channel from blacklisted people (default: they can read but not talk)')
+    @staff_only()
+    async def role_cmd(self, interaction: discord.Interaction, role: Optional[discord.Role]=None, hide_channels: bool=False):
+        g = interaction.guild
+        if not g.me.guild_permissions.manage_roles:
+            return await interaction.response.send_message('I need **Manage Roles** first.', ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        if role is not None:
+            if role.managed or role.is_default() or role >= g.me.top_role:
+                return await interaction.followup.send(f"I can't use {role.mention}. Move my role **above** it in Server Settings → Roles.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+            self.bot.data['blacklist_role'] = role.id
+            self.bot.save_data()
+        else:
+            role = await self.get_role(g)
+        if role is None:
+            return await interaction.followup.send("I couldn't create the role.", ephemeral=True)
+        await self.apply_overwrites(g, role, hide_channels)
+        await interaction.followup.send(f"✅ Blacklist role is {role.mention}. In every channel it can't " + ('see anything.' if hide_channels else 'send messages, react, make threads or join voice.') + ' Run this again if you add new channels.', ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @app_commands.command(name='check', description='Check if someone is blacklisted (staff)')
     @staff_only()
@@ -3969,9 +4117,7 @@ class TicketTools(commands.Cog):
 
     async def close_quiet(self, ch):
         text = await build_transcript(ch)
-        log = self.bot.get_channel(LOG_CHANNEL_ID)
-        if log:
-            await log.send(f'Transcript for **{ch.name}** (auto-closed, no activity)', file=transcript_file(text, ch.name))
+        await post_transcript(ch.guild, ch, text, '(auto-closed, no activity)')
         owner = await get_owner(ch.guild, ch)
         if owner:
             try:
@@ -4316,4 +4462,24 @@ async def tos(interaction: discord.Interaction, post_in: Optional[discord.TextCh
     except discord.HTTPException:
         return await interaction.response.send_message(f"I couldn't post in {ch.mention}.", ephemeral=True)
     await interaction.response.send_message(f'✅ Rules posted in {ch.mention}.', ephemeral=True)
+
+def is_report(channel):
+    return 'staffreport' in channel.name
+
+async def post_transcript(guild, channel, text, note=''):
+    """Normal tickets go to the log channel. Staff reports go only to the server owner, so staff can't read reports about themselves."""
+    label = f'Transcript for **{channel.name}**' + (f' {note}' if note else '')
+    if is_report(channel):
+        try:
+            owner = guild.owner or await guild.fetch_member(guild.owner_id)
+            await owner.send(label, file=transcript_file(text, channel.name))
+        except (discord.HTTPException, AttributeError):
+            pass
+        return
+    log = bot.get_channel(LOG_CHANNEL_ID)
+    if log:
+        try:
+            await log.send(label, file=transcript_file(text, channel.name))
+        except discord.HTTPException:
+            pass
 bot.run(os.getenv('DISCORD_TOKEN'))
