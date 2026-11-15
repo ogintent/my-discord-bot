@@ -695,8 +695,8 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
     e.add_field(name='◆ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
     e.add_field(name='◆ Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /dmkey · /activekeys (owner) · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
-    e.add_field(name='◆ Server Tools', value='/scamguard · /mediapanel · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
-    e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
+    e.add_field(name='◆ Server Tools', value='/scamguard · /mediapanel · /stafftos · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Info & Fun', value='/ping · /tos · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
 @bot.tree.command(name='ping', description="Check the bot's latency")
@@ -3016,8 +3016,8 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.channel.send(embed=e, view=MediaView())
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
-PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
+PERM_BY_CMD = {'stafftos': 'administrator', 'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -4257,4 +4257,63 @@ async def removekey(interaction: discord.Interaction, number: int):
     k['list'].remove(hit)
     save_data()
     await interaction.response.send_message(f"🗑️ Removed record #{number} ({hit['product']}). This only deletes the record here. It doesn't disable the key itself.", ephemeral=True)
+STAFF_TOS = [('📋 GENERAL RULES', ['Respect all members and staff.', 'No disrespect toward higher-ups.', 'No abusing staff permissions.', 'No leaking private information.', 'No unnecessary drama or harassment.', 'Follow management instructions.', 'No NSFW content.', 'No inappropriate behavior.']), ('🎫 CUSTOMER SUPPORT', ['Treat customers respectfully.', 'No scamming or misleading customers.', 'No leaking customer information.', 'Do not ignore tickets.', 'No unauthorized refunds or discounts.']), ('📈 ACTIVITY', ['Stay active.', 'Complete assigned duties.', 'Notify management about inactivity.', 'Do not fake activity.']), ('⚠️ PUNISHMENTS  ›  WARNING', ['Minor disrespect.', 'Minor rule violations.', 'Ignoring instructions.']), ('⚠️ PUNISHMENTS  ›  2 WARNINGS', ['Repeated rule violations.', 'Disrespect toward higher-ups.', 'Repeated inactivity.']), ('⚠️ PUNISHMENTS  ›  DEMOTION', ['Repeated warnings.', 'Permission abuse.', 'Leaking staff chats.', 'Failure to perform duties.']), ('⚠️ PUNISHMENTS  ›  STAFF BLACKLIST', ['Scamming or stealing.', 'Leaking sensitive information.', 'Severe harassment or threats.', 'Severe NSFW misconduct.', 'Server sabotage.', 'Serious abuse of authority.']), ('👑 MANAGEMENT', ['Management handles punishments.', 'Serious violations can result in immediate removal.', 'Punishments depend on severity.', 'Appeals must go through management.'])]
+STAFF_TOS_FINAL = 'Being staff is a privilege, not a right. Breaking these rules can result in warnings, demotion, or permanent staff blacklisting.'
+
+def staff_tos_embed(guild, management=None):
+    e = discord.Embed(title='🛡️ STAFF RULES & REGULATIONS', description='━━━━━━━━━━━━━━━━━━━━\nAll staff must remain **respectful, active, and professional.**\n━━━━━━━━━━━━━━━━━━━━', color=15158332)
+    for name, lines in STAFF_TOS:
+        e.add_field(name=name, value='\n'.join((f'・{l}' for l in lines)), inline=False)
+    e.add_field(name='📌 FINAL NOTICE', value=f'**{STAFF_TOS_FINAL}**', inline=False)
+    if management:
+        e.add_field(name='👥 MANAGEMENT TEAM', value=management[:1000], inline=False)
+    if guild is not None and guild.icon:
+        e.set_thumbnail(url=guild.icon.url)
+    e.set_footer(text=f'{BUSINESS_NAME} • Staff Team')
+    return e
+
+@bot.tree.command(name='stafftos', description='Post the staff rules and regulations (admin)')
+@app_commands.describe(channel='Where to post it (default: this channel)', management='Your management team, like @Owner @Manager (optional)')
+@app_commands.checks.has_permissions(administrator=True)
+async def stafftos(interaction: discord.Interaction, channel: Optional[discord.TextChannel]=None, management: Optional[app_commands.Range[str, 1, 1000]]=None):
+    ch = channel or interaction.channel
+    perms = ch.permissions_for(interaction.guild.me)
+    if not (perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {ch.mention}.', ephemeral=True)
+    try:
+        await ch.send(embed=staff_tos_embed(interaction.guild, management), allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        return await interaction.response.send_message(f"I couldn't post in {ch.mention}.", ephemeral=True)
+    await interaction.response.send_message(f'✅ Staff rules posted in {ch.mention}.', ephemeral=True)
+MEMBER_TOS = [('📋 GENERAL RULES', ['Respect all members and staff.', 'No harassment, threats, or bullying.', 'No excessive spam or flooding.', 'No unnecessary drama or arguments.', 'No impersonating staff or other members.', 'No advertising without permission.', 'No begging or asking for free products.']), ('🔞 CONTENT RULES', ['No NSFW content.', 'No inappropriate images or links.', 'No offensive or discriminatory behavior.', 'No inappropriate content involving minors.']), ('💬 CHAT RULES', ['Use the correct channels.', 'Do not ping staff unnecessarily.', 'Do not raid or disrupt the server.', 'Keep conversations appropriate.', 'Follow staff instructions.']), ('🛒 STORE & PURCHASES', ['Do not scam or attempt to scam others.', 'Do not share purchased keys or products without permission.', 'Do not fake payment confirmations.', 'Contact support for product issues.', 'Read the refund policy before purchasing.', 'Do not chargeback legitimate purchases.']), ('⚠️ PUNISHMENTS', ['Minor violations may result in a warning.', 'Repeated violations may result in a timeout.', 'Serious violations may result in a kick or ban.', 'Scamming, raiding, or severe misconduct may result in an immediate permanent ban.']), ('👑 STAFF AUTHORITY', ['Listen to staff instructions.', 'Do not argue with staff in public channels.', 'Appeals must be handled through the proper channels.', 'Staff reserve the right to enforce server rules.'])]
+MEMBER_TOS_FINAL = 'By remaining in this server, you agree to follow all rules. Failure to do so may result in warnings, timeouts, kicks, or permanent bans.'
+
+def member_tos_embed(guild, management=None):
+    e = discord.Embed(title='📜 MEMBER RULES & REGULATIONS', description='━━━━━━━━━━━━━━━━━━━━\nAll members are expected to follow these rules to keep the community **safe and respectful.**\n━━━━━━━━━━━━━━━━━━━━', color=3447003)
+    for name, lines in MEMBER_TOS:
+        e.add_field(name=name, value='\n'.join((f'・{l}' for l in lines)), inline=False)
+    e.add_field(name='📌 FINAL NOTICE', value=f'**{MEMBER_TOS_FINAL}**', inline=False)
+    if management:
+        e.add_field(name='👥 MANAGEMENT TEAM', value=management[:1000], inline=False)
+    if guild is not None and guild.icon:
+        e.set_thumbnail(url=guild.icon.url)
+    e.set_footer(text=f'{BUSINESS_NAME} • Community Rules')
+    return e
+
+@bot.tree.command(name='tos', description='Read the server rules and terms')
+@app_commands.describe(post_in='Admins only: post the rules publicly in this channel', management='Admins only: your management team, like @Owner @Manager')
+async def tos(interaction: discord.Interaction, post_in: Optional[discord.TextChannel]=None, management: Optional[app_commands.Range[str, 1, 1000]]=None):
+    if post_in is None and management is None:
+        return await interaction.response.send_message(embed=member_tos_embed(interaction.guild), ephemeral=True)
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message('Only admins can post the rules in a channel. Run `/tos` on its own to read them.', ephemeral=True)
+    ch = post_in or interaction.channel
+    perms = ch.permissions_for(interaction.guild.me)
+    if not (perms.send_messages and perms.embed_links):
+        return await interaction.response.send_message(f'I need **Send Messages** and **Embed Links** in {ch.mention}.', ephemeral=True)
+    try:
+        await ch.send(embed=member_tos_embed(interaction.guild, management), allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException:
+        return await interaction.response.send_message(f"I couldn't post in {ch.mention}.", ephemeral=True)
+    await interaction.response.send_message(f'✅ Rules posted in {ch.mention}.', ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
