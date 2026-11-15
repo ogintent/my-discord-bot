@@ -70,6 +70,7 @@ class MyBot(commands.Bot):
         await self.add_cog(Blacklist(self))
         await self.add_cog(TicketTools(self))
         await self.add_cog(DataBackup(self))
+        await self.add_cog(ActivityCheck(self))
         apply_visibility(self.tree)
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
@@ -262,21 +263,25 @@ async def create_ticket(guild, user, kind):
     overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False), user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True), staff: discord.PermissionOverwrite(view_channel=True, send_messages=True), guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
     report = kind == 'staffreport'
     esc = guild.get_role(ESCALATE_ROLE_ID) if ESCALATE_ROLE_ID else None
+    mgr = find_manager_role(guild) if report else None
     if report:
         overwrites[staff] = discord.PermissionOverwrite(view_channel=False)
         if esc is not None:
             overwrites[esc] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        if mgr is not None:
+            overwrites[mgr] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
     category = guild.get_channel(CATEGORY_ID) if CATEGORY_ID else None
     ch = await guild.create_text_channel(f'{kind}-{user.name}', overwrites=overwrites, category=category, topic=str(user.id))
     if report:
-        who = 'management' if esc is not None else 'the server owner and admins'
+        who = 'management' if esc is not None or mgr is not None else 'the server owner and admins'
         desc = f'Tell us **which staff member** you are reporting, **what happened**, and include any screenshots or evidence.\n\n🔒 Only {who} can see this ticket. Regular staff cannot.'
     else:
         desc = 'Describe your issue and staff will be with you shortly.'
     e = discord.Embed(title=f'{emoji} {label}', description=desc, color=discord.Color.red() if report else discord.Color.blurple())
     e.add_field(name='Opened by', value=user.mention)
     e.add_field(name='Type', value=label)
-    await ch.send(f"{user.mention} {((esc.mention if esc is not None else '') if report else staff.mention)}", embed=e, view=CloseView())
+    ping = mgr or esc if report else staff
+    await ch.send(f"{user.mention} {(ping.mention if ping is not None else '')}", embed=e, view=CloseView(), allowed_mentions=discord.AllowedMentions(users=True, roles=[ping] if ping is not None else False))
     return (ch, None)
 
 class CloseView(discord.ui.View):
@@ -287,7 +292,7 @@ class CloseView(discord.ui.View):
     @discord.ui.button(label='Close Ticket', style=discord.ButtonStyle.danger, custom_id='ticket:close')
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
-        higher = bool(ESCALATE_ROLE_ID) and any((r.id == ESCALATE_ROLE_ID for r in interaction.user.roles))
+        higher = is_manager(interaction.user)
         if not (is_staff(interaction.user) or higher or str(interaction.user.id) == channel.topic):
             return await interaction.response.send_message('Not allowed.', ephemeral=True)
         await interaction.response.send_message('Closing in 5 seconds, saving transcript...')
@@ -706,7 +711,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
     e.add_field(name='◆ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
     e.add_field(name='◆ Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /dmkey · /activekeys (owner) · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
-    e.add_field(name='◆ Server Tools', value='/scamguard · /mediapanel · /stafftos · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
+    e.add_field(name='◆ Server Tools', value='/scamguard · /mediapanel · /staffactivitycheck · /stafftos · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /tos · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
 
@@ -3079,7 +3084,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'stafftos': 'administrator', 'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+PERM_BY_CMD = {'stafftos': 'administrator', 'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -4462,6 +4467,23 @@ async def tos(interaction: discord.Interaction, post_in: Optional[discord.TextCh
     except discord.HTTPException:
         return await interaction.response.send_message(f"I couldn't post in {ch.mention}.", ephemeral=True)
     await interaction.response.send_message(f'✅ Rules posted in {ch.mention}.', ephemeral=True)
+MANAGER_ROLE_NAME = 'staff manager'
+
+def role_base(name):
+    name = re.sub('^[^\\w]+', '', name)
+    return re.sub('^frontline\\s*[|│┃・:»\\-]*\\s*', '', name, flags=re.I).strip().lower()
+
+def find_manager_role(guild):
+    """The 'Frontline | Staff Manager' role (also matches 'Staff Manager')."""
+    exact = discord.utils.get(guild.roles, name='Frontline | Staff Manager')
+    if exact is not None:
+        return exact
+    return next((r for r in guild.roles if role_base(r.name) == MANAGER_ROLE_NAME), None)
+
+def is_manager(member):
+    if ESCALATE_ROLE_ID and any((r.id == ESCALATE_ROLE_ID for r in member.roles)):
+        return True
+    return any((role_base(r.name) == MANAGER_ROLE_NAME for r in member.roles))
 
 def is_report(channel):
     return 'staffreport' in channel.name
@@ -4482,4 +4504,232 @@ async def post_transcript(guild, channel, text, note=''):
             await log.send(label, file=transcript_file(text, channel.name))
         except discord.HTTPException:
             pass
+try:
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo('America/New_York')
+except Exception:
+    ET = timezone(timedelta(hours=-5))
+ACT_HOURS = 12
+ACT_STRIKE_DAYS = 30
+
+def act_time(hour):
+    return datetime(2000, 1, 1, hour).strftime('%I:%M %p').lstrip('0') + ' ET'
+
+class ActivityCheck(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    def cfg(self):
+        c = self.bot.data.setdefault('activity', {})
+        for k, v in (('channel', 0), ('guild', 0), ('daily', False), ('hour', 12), ('next', 1), ('last_day', ''), ('active', None)):
+            c.setdefault(k, v)
+        c.setdefault('exempt', [])
+        c.setdefault('strikes', {})
+        return c
+
+    async def cog_load(self):
+        self.tick.start()
+
+    async def cog_unload(self):
+        self.tick.cancel()
+
+    def find_channel(self, guild):
+        c = self.cfg()
+        ch = guild.get_channel(c['channel']) if c['channel'] else None
+        if ch is None:
+            ch = next((x for x in guild.text_channels if 'staffactivitycheck' in re.sub('[^a-z0-9]', '', x.name.lower())), None)
+        return ch
+
+    def recent_strikes(self, uid):
+        cutoff = time.time() - ACT_STRIKE_DAYS * 86400
+        lst = [s for s in self.cfg()['strikes'].get(str(uid), []) if s['ts'] >= cutoff]
+        self.cfg()['strikes'][str(uid)] = lst
+        return lst
+
+    async def post(self, guild):
+        """Posts a new activity check. Returns (ok, text)."""
+        c = self.cfg()
+        ch, role = (self.find_channel(guild), guild.get_role(STAFF_ROLE_ID))
+        if ch is None:
+            return (False, 'I couldn\'t find a channel called "Staff Activity Check". Run `/staffactivitycheck setup` and pick the channel.')
+        if role is None:
+            return (False, "I couldn't find the staff role (STAFF_ROLE_ID).")
+        perms = ch.permissions_for(guild.me)
+        if not (perms.send_messages and perms.embed_links and perms.add_reactions):
+            return (False, f'I need **Send Messages**, **Embed Links** and **Add Reactions** in {ch.mention}.')
+        if c['active'] and time.time() < c['active']['deadline']:
+            return (False, f"An activity check is already running. It ends <t:{int(c['active']['deadline'])}:R>.")
+        if c['active']:
+            await self.finish(guild)
+        n = c['next']
+        deadline = time.time() + ACT_HOURS * 3600
+        staff_ids = [m.id for m in role.members if not m.bot and m.id not in c['exempt']]
+        e = discord.Embed(title=f'📋 Staff Activity Check #{n}', color=15844367, timestamp=discord.utils.utcnow())
+        e.description = f'Attention {role.mention}. This is a mandatory activity check.\n\n**Action required:** react with ✅ below to confirm that you are active.'
+        e.add_field(name='⏰ Deadline', value=f'<t:{int(deadline)}:F>\n(<t:{int(deadline)}:R>) · you have **{ACT_HOURS} hours**', inline=False)
+        e.add_field(name='⚠️ Consequences', value='**Failure to respond will result in an automatic warning. Multiple missed activity checks will result in termination from the staff team.**', inline=False)
+        e.add_field(name='📌 Unavailable?', value='Notify management **before** the deadline to be excused.', inline=False)
+        e.set_footer(text=f'{BUSINESS_NAME} • Staff Management')
+        try:
+            msg = await ch.send(content=role.mention, embed=e, allowed_mentions=discord.AllowedMentions(roles=[role]))
+            await msg.add_reaction('✅')
+        except discord.HTTPException as ex:
+            return (False, f'Discord refused the message: {ex.text}')
+        c['next'] += 1
+        c.update(guild=guild.id, channel=ch.id, last_day=datetime.now(ET).strftime('%Y-%m-%d'))
+        c['active'] = {'channel': ch.id, 'message': msg.id, 'number': n, 'deadline': deadline, 'staff': staff_ids}
+        self.bot.save_data()
+        return (True, f'Activity Check #{n} posted in {ch.mention}. It closes <t:{int(deadline)}:R>.')
+
+    async def finish(self, guild):
+        c = self.cfg()
+        active, c['active'] = (c['active'], None)
+        self.bot.save_data()
+        if not active:
+            return
+        ch = guild.get_channel(active['channel'])
+        if ch is None:
+            return
+        reacted, readable = (set(), True)
+        try:
+            msg = await ch.fetch_message(active['message'])
+            for r in msg.reactions:
+                if str(r.emoji) == '✅':
+                    async for u in r.users():
+                        reacted.add(u.id)
+        except discord.HTTPException:
+            readable, msg = (False, None)
+        role = guild.get_role(STAFF_ROLE_ID)
+        missed, passed = ([], 0)
+        if readable:
+            for uid in active['staff']:
+                member = guild.get_member(uid)
+                if member is None or role is None or role not in member.roles or (uid in c['exempt']):
+                    continue
+                if uid in reacted:
+                    passed += 1
+                else:
+                    missed.append(member)
+        n = active['number']
+        flagged = []
+        for m in missed:
+            self.bot.data['warnings'].setdefault(str(m.id), []).append({'reason': f'Missed Staff Activity Check #{n}', 'mod': 'Activity Check', 'time': discord.utils.utcnow().strftime('%Y-%m-%d')})
+            c['strikes'].setdefault(str(m.id), []).append({'ts': time.time(), 'n': n})
+            count = len(self.recent_strikes(m.id))
+            if count >= 2:
+                flagged.append((m, count))
+            try:
+                await m.send(embed=discord.Embed(title='⚠️ Staff Warning: Missed Activity Check', description=f'You did not respond to **Staff Activity Check #{n}** in **{guild.name}** within {ACT_HOURS} hours, so you have received an automatic **warning**.\n\nMissed activity checks in the last {ACT_STRIKE_DAYS} days: **{count}**.\nMultiple missed checks can result in **termination from the staff team**. If you believe this is a mistake, contact management.', color=discord.Color.red()))
+            except discord.HTTPException:
+                pass
+        self.bot.save_data()
+        if msg is not None:
+            try:
+                e = msg.embeds[0].copy()
+                e.color = discord.Color.dark_grey()
+                e.add_field(name='🔒 Closed', value=f'{passed} responded · {len(missed)} missed', inline=False)
+                await msg.edit(embed=e)
+            except (discord.HTTPException, IndexError):
+                pass
+        if not readable:
+            return await ch.send(f'⚠️ I could not read Activity Check #{n} (the message may have been deleted), so nobody was warned.')
+        res = discord.Embed(title=f'📊 Activity Check #{n} Results', color=discord.Color.green() if not missed else discord.Color.red())
+        res.add_field(name=f'✅ Responded ({passed})', value='All tracked staff responded.' if not missed else 'See the original message.', inline=False)
+        if missed:
+            res.add_field(name=f'❌ Missed ({len(missed)}) — warned automatically', value=', '.join((m.mention for m in missed))[:1000], inline=False)
+        if not self.bot.intents.members:
+            res.set_footer(text='Server Members Intent is off, so only staff I have seen were tracked (set MEMBERS_INTENT=1).')
+        mention = ''
+        mgr = find_manager_role(guild)
+        if flagged:
+            lines = '\n'.join((f'• {m.mention}: **{k}** missed checks in {ACT_STRIKE_DAYS} days' for m, k in flagged))
+            res.add_field(name='🚨 Management attention', value=f'{lines}\nThese staff may be subject to termination.', inline=False)
+            mention = mgr.mention if mgr else ''
+        try:
+            await ch.send(content=mention or None, embed=res, allowed_mentions=discord.AllowedMentions(roles=[mgr] if mgr and mention else False, users=False))
+        except discord.HTTPException:
+            pass
+
+    @tasks.loop(minutes=1)
+    async def tick(self):
+        c = self.cfg()
+        guild = self.bot.get_guild(c['guild']) if c['guild'] else None
+        if guild is None:
+            return
+        try:
+            if c['active'] and time.time() >= c['active']['deadline']:
+                await self.finish(guild)
+            if c['daily'] and (not c['active']):
+                now = datetime.now(ET)
+                sched = now.replace(hour=c['hour'], minute=0, second=0, microsecond=0)
+                today = now.strftime('%Y-%m-%d')
+                if c['last_day'] != today and now >= sched:
+                    if now - sched < timedelta(hours=3):
+                        ok, text = await self.post(guild)
+                        if not ok:
+                            print(f'[activity] {text}')
+                    else:
+                        c['last_day'] = today
+                        self.bot.save_data()
+        except Exception as ex:
+            print(f'[activity] {ex!r}')
+
+    @tick.before_loop
+    async def before_tick(self):
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name='staffactivitycheck', description='Post a staff activity check, or set up the daily one (management)')
+    @app_commands.describe(action='What to do (default: post a check now)', channel='Channel for the checks (for setup)', hour='Daily time in Eastern Time, 0-23 (12 = noon)', member='A staff member (for exempt / reset)')
+    @app_commands.choices(action=[app_commands.Choice(name='Post a check now', value='send'), app_commands.Choice(name='Set up the daily check', value='setup'), app_commands.Choice(name='Turn the daily check off', value='off'), app_commands.Choice(name='Status', value='status'), app_commands.Choice(name='Excuse / un-excuse a member', value='exempt'), app_commands.Choice(name="Clear a member's missed checks", value='reset')])
+    async def staffactivitycheck(self, interaction: discord.Interaction, action: Optional[app_commands.Choice[str]]=None, channel: Optional[discord.TextChannel]=None, hour: Optional[app_commands.Range[int, 0, 23]]=None, member: Optional[discord.Member]=None):
+        u = interaction.user
+        if not (is_manager(u) or u.guild_permissions.administrator or u.id == interaction.guild.owner_id):
+            return await interaction.response.send_message('Only management can use this.', ephemeral=True)
+        g, c = (interaction.guild, self.cfg())
+        act = action.value if action else 'send'
+        if act == 'send':
+            await interaction.response.defer(ephemeral=True)
+            ok, text = await self.post(g)
+            note = '' if self.bot.intents.members else '\n⚠️ Server Members Intent is off, so I can only track staff I have seen. Set `MEMBERS_INTENT=1` and turn it on in the Developer Portal.'
+            return await interaction.followup.send(('✅ ' if ok else '❌ ') + text + (note if ok else ''), ephemeral=True)
+        if act == 'setup':
+            ch = channel or self.find_channel(g)
+            if ch is None:
+                return await interaction.response.send_message('Pick the channel with the `channel` option.', ephemeral=True)
+            c.update(channel=ch.id, guild=g.id, daily=True, hour=hour if hour is not None else c['hour'])
+            self.bot.save_data()
+            return await interaction.response.send_message(f"✅ Daily activity check is **ON**: every day at **{act_time(c['hour'])}** in {ch.mention}. Staff get {ACT_HOURS} hours to react, then anyone who didn't is warned automatically.", ephemeral=True)
+        if act == 'off':
+            c['daily'] = False
+            self.bot.save_data()
+            return await interaction.response.send_message('Daily activity check is **OFF**. (A check that is already running still finishes.)', ephemeral=True)
+        if act in ('exempt', 'reset'):
+            if member is None:
+                return await interaction.response.send_message('Pick the staff member with the `member` option.', ephemeral=True)
+            if act == 'exempt':
+                if member.id in c['exempt']:
+                    c['exempt'].remove(member.id)
+                    text = f'✅ {member.mention} is no longer excused.'
+                else:
+                    c['exempt'].append(member.id)
+                    text = f'✅ {member.mention} is excused from activity checks (for example, on leave).'
+            else:
+                c['strikes'].pop(str(member.id), None)
+                text = f'✅ Cleared the missed checks for {member.mention}.'
+            self.bot.save_data()
+            return await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        ch = self.find_channel(g)
+        e = discord.Embed(title='📋 Staff activity checks', color=discord.Color.green() if c['daily'] else discord.Color.red())
+        e.add_field(name='Daily check', value=f"ON · {act_time(c['hour'])}" if c['daily'] else 'OFF')
+        e.add_field(name='Channel', value=ch.mention if ch else '❌ not found')
+        e.add_field(name='Next number', value=f"#{c['next']}")
+        if c['active']:
+            e.add_field(name='Running now', value=f"#{c['active']['number']} · ends <t:{int(c['active']['deadline'])}:R>", inline=False)
+        strikes = [(uid, len(self.recent_strikes(uid))) for uid in list(c['strikes'])]
+        strikes = [s for s in strikes if s[1]]
+        e.add_field(name=f'Missed checks (last {ACT_STRIKE_DAYS} days)', value='\n'.join((f'<@{uid}>: {k}' for uid, k in strikes))[:1000] or 'None', inline=False)
+        e.add_field(name='Excused', value=' '.join((f'<@{i}>' for i in c['exempt'])) or 'Nobody', inline=False)
+        e.add_field(name='Server Members Intent', value='✅ on' if self.bot.intents.members else '❌ off (set MEMBERS_INTENT=1 so every staff member is tracked)', inline=False)
+        await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 bot.run(os.getenv('DISCORD_TOKEN'))
