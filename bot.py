@@ -694,7 +694,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='◆ Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='◆ Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
     e.add_field(name='◆ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
-    e.add_field(name='◆ Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
+    e.add_field(name='◆ Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /dmkey · /activekeys (owner) · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
     e.add_field(name='◆ Server Tools', value='/scamguard · /mediapanel · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='◆ Info & Fun', value='/ping · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
@@ -3017,7 +3017,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
+PERM_BY_CMD = {'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -4146,4 +4146,115 @@ async def savedata(interaction: discord.Interaction):
         await interaction.followup.send(f'💾 Saved all settings to {where}. After a redeploy the bot loads them back automatically.', ephemeral=True)
     else:
         await interaction.followup.send(f"❌ Backup failed: {backup_state['error'] or 'unknown error'}. I need **View Channel**, **Send Messages**, **Attach Files** and **Read Message History** in {where}.", ephemeral=True)
+
+def key_table():
+    k = data.setdefault('keys', {})
+    k.setdefault('next', 1)
+    k.setdefault('list', [])
+    return k
+
+class KeyModal(discord.ui.Modal, title='Send a key'):
+    key = discord.ui.TextInput(label='The key', max_length=300, placeholder='Paste the key here')
+    note = discord.ui.TextInput(label='Message to the customer (optional)', style=discord.TextStyle.paragraph, required=False, max_length=300)
+
+    def __init__(self, member, product, sender):
+        super().__init__()
+        self.member, self.product, self.sender = (member, product, sender)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        k = key_table()
+        key = self.key.value.strip()
+        dup = next((e for e in k['list'] if e['key'] == key), None)
+        if dup is not None:
+            return await interaction.response.send_message(f"⚠️ That exact key was already sent to <@{dup['user']}> (**{dup['product']}**, #{dup['id']}). Nothing was sent.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        e = discord.Embed(title=f'🔑 Your {self.product} key', description='Thank you for your purchase! Your key is below.', color=discord.Color.green(), timestamp=discord.utils.utcnow())
+        e.add_field(name='Product', value=self.product, inline=False)
+        e.add_field(name='Key', value=f'```{key}```', inline=False)
+        if self.note.value:
+            e.add_field(name='Note from staff', value=self.note.value, inline=False)
+        e.add_field(name='⚠️ Keep it private', value=f'Never share your key. If anything goes wrong, open a ticket in **{interaction.guild.name}**.', inline=False)
+        e.set_footer(text=f'{BUSINESS_NAME} • Thank you!')
+        try:
+            await self.member.send(embed=e)
+        except discord.HTTPException:
+            return await interaction.response.send_message(f"❌ I couldn't DM {self.member.mention}. Their DMs are closed. Nothing was recorded. Ask them to open DMs for this server, or give the key in their ticket.", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        entry = {'id': k['next'], 'user': self.member.id, 'product': self.product, 'key': key, 'by': self.sender.id, 'ts': time.time()}
+        k['next'] += 1
+        k['list'].append(entry)
+        save_data()
+        await interaction.response.send_message(f"✅ Sent **{self.product}** key to {self.member.mention} (record #{entry['id']}).", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        log = bot.get_channel(LOG_CHANNEL_ID)
+        if log:
+            try:
+                await log.send(embed=discord.Embed(title='🔑 Key delivered', description=f"**{self.product}** → {self.member.mention} (`{self.member.id}`)\nSent by {self.sender.mention} · record #{entry['id']}", color=discord.Color.green()), allowed_mentions=discord.AllowedMentions.none())
+            except discord.HTTPException:
+                pass
+
+@bot.tree.command(name='dmkey', description='DM a customer their product key (staff)')
+@app_commands.describe(user='The customer', product='Which product they bought')
+@app_commands.autocomplete(product=product_autocomplete)
+@staff_only()
+async def dmkey(interaction: discord.Interaction, user: discord.Member, product: str):
+    hit = find_product(product)
+    if hit is None:
+        return await interaction.response.send_message("I couldn't find that product. Pick one from the list that appears as you type.", ephemeral=True)
+    if user.bot:
+        return await interaction.response.send_message("You can't send a key to a bot.", ephemeral=True)
+    await interaction.response.send_modal(KeyModal(user, hit[0], interaction.user))
+
+class KeysView(discord.ui.View):
+    PER = 8
+
+    def __init__(self, owner_id, entries, page=0):
+        super().__init__(timeout=300)
+        self.owner_id, self.entries, self.page = (owner_id, entries, page)
+        self.pages = max(1, (len(entries) + self.PER - 1) // self.PER)
+        self.prev.disabled = page <= 0
+        self.next.disabled = page >= self.pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return interaction.user.id == self.owner_id
+
+    def embed(self):
+        chunk = self.entries[self.page * self.PER:(self.page + 1) * self.PER]
+        lines = [f"**#{e['id']}** · {e['product']}\n<@{e['user']}> · <t:{int(e['ts'])}:d> · ||{e['key']}||" for e in chunk]
+        em = discord.Embed(title=f'🔑 Active keys ({len(self.entries)})', description='\n\n'.join(lines) or 'No keys found.', color=discord.Color.gold())
+        em.set_footer(text=f'Page {self.page + 1}/{self.pages} • Click a spoiler to reveal a key')
+        return em
+
+    @discord.ui.button(label='Previous', style=discord.ButtonStyle.secondary)
+    async def prev(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=KeysView(self.owner_id, self.entries, self.page - 1).embed(), view=KeysView(self.owner_id, self.entries, self.page - 1))
+
+    @discord.ui.button(label='Next', style=discord.ButtonStyle.secondary)
+    async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=KeysView(self.owner_id, self.entries, self.page + 1).embed(), view=KeysView(self.owner_id, self.entries, self.page + 1))
+
+@bot.tree.command(name='activekeys', description='List every key sent with /dmkey and its product (server owner only)')
+@app_commands.describe(product='Only show one product (optional)', user='Only show keys sent to one person (optional)')
+@app_commands.autocomplete(product=product_autocomplete)
+@owner_only()
+async def activekeys(interaction: discord.Interaction, product: Optional[str]=None, user: Optional[discord.User]=None):
+    entries = list(reversed(key_table()['list']))
+    if product:
+        hit = find_product(product)
+        entries = [e for e in entries if hit and e['product'] == hit[0]]
+    if user:
+        entries = [e for e in entries if e['user'] == user.id]
+    if not entries:
+        return await interaction.response.send_message('No keys found. Keys show up here after you use `/dmkey`.', ephemeral=True)
+    view = KeysView(interaction.user.id, entries)
+    await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+@bot.tree.command(name='removekey', description='Delete a key record by its number (server owner only)')
+@app_commands.describe(number='The # shown in /activekeys')
+@owner_only()
+async def removekey(interaction: discord.Interaction, number: int):
+    k = key_table()
+    hit = next((e for e in k['list'] if e['id'] == number), None)
+    if hit is None:
+        return await interaction.response.send_message('No key record with that number.', ephemeral=True)
+    k['list'].remove(hit)
+    save_data()
+    await interaction.response.send_message(f"🗑️ Removed record #{number} ({hit['product']}). This only deletes the record here. It doesn't disable the key itself.", ephemeral=True)
 bot.run(os.getenv('DISCORD_TOKEN'))
