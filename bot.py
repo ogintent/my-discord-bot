@@ -182,7 +182,7 @@ async def mod_log(guild, action, moderator, target, reason=None, color=discord.C
     except discord.HTTPException:
         pass
 
-async def build_transcript(channel):
+async def build_transcript(channel, closed_by=None, reason=None):
     lines = []
     async for m in channel.history(limit=None, oldest_first=True):
         text = m.content or ''
@@ -191,7 +191,15 @@ async def build_transcript(channel):
         if m.embeds and (not text):
             text = '[embed]'
         lines.append(f'[{m.created_at:%Y-%m-%d %H:%M}] {m.author}: {text}')
-    return '\n'.join(lines)
+    if closed_by is None:
+        return '\n'.join(lines)
+    try:
+        now = discord.utils.utcnow().astimezone(ET).strftime('%Y-%m-%d %I:%M %p ET')
+    except NameError:
+        now = discord.utils.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    opener = f'<@{channel.topic}>' if channel.topic and channel.topic.isdigit() else 'unknown'
+    head = ['=' * 44, f'TICKET TRANSCRIPT: #{channel.name}', f"Ticket owner (ID): {channel.topic or 'unknown'}", f'CLOSED BY: {closed_by}', f"Close reason: {reason or 'No reason given'}", f'Closed at: {now}', f'Messages: {len(lines)}', '=' * 44, '']
+    return '\n'.join(head + lines)
 
 def transcript_file(text, name):
     return discord.File(io.BytesIO(text.encode('utf-8')), filename=f'{name}.txt')
@@ -312,6 +320,31 @@ async def create_ticket(guild, user, kind):
     await ch.send(f"{user.mention} {(ping.mention if ping is not None else '')}", embed=e, view=CloseView(), allowed_mentions=discord.AllowedMentions(users=True, roles=[ping] if ping is not None else False))
     return (ch, None)
 
+async def close_ticket(guild, channel, closer, reason=None):
+    """Saves the transcript (with who closed it), DMs the opener, then deletes the channel."""
+    who = f'{closer} ({closer.id})' if hasattr(closer, 'id') else str(closer)
+    text = await build_transcript(channel, who, reason)
+    if not is_report(channel):
+        await record_ticket(channel)
+    ai = bot.get_cog('ai')
+    if ai and ai.cfg()['learn'] and GROQ_KEY and channel.topic and channel.topic.isdigit() and (not is_report(channel)):
+        convo = await ai.collect(channel)
+        if convo:
+            asyncio.create_task(ai.learn(convo, guild))
+    await post_transcript(guild, channel, text, f'(closed by {closer})')
+    owner = await get_owner(guild, channel)
+    if owner:
+        try:
+            e = Embed(title='🔒 Your ticket was closed', description=f"**Closed by:** {getattr(closer, 'mention', closer)}\n**Reason:** {reason or 'No reason given'}\n\nThe transcript is attached below. We'd love a review!", color=discord.Color.red())
+            await owner.send(embed=e, file=transcript_file(text, channel.name), view=ReviewView())
+        except discord.HTTPException:
+            pass
+    await asyncio.sleep(5)
+    await channel.delete(reason=f'Ticket closed by {closer}')
+
+def can_close(user, channel):
+    return is_staff(user) or is_manager(user) or str(user.id) == channel.topic
+
 class CloseView(discord.ui.View):
 
     def __init__(self):
@@ -320,27 +353,22 @@ class CloseView(discord.ui.View):
     @discord.ui.button(label='Close Ticket', style=discord.ButtonStyle.danger, custom_id='ticket:close')
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
-        higher = is_manager(interaction.user)
-        if not (is_staff(interaction.user) or higher or str(interaction.user.id) == channel.topic):
+        if not can_close(interaction.user, channel):
             return await interaction.response.send_message('Not allowed.', ephemeral=True)
-        await interaction.response.send_message('Closing in 5 seconds, saving transcript...')
-        text = await build_transcript(channel)
-        if not is_report(channel):
-            await record_ticket(channel)
-        ai = bot.get_cog('ai')
-        if ai and ai.cfg()['learn'] and GROQ_KEY and channel.topic and channel.topic.isdigit() and (not is_report(channel)):
-            convo = await ai.collect(channel)
-            if convo:
-                asyncio.create_task(ai.learn(convo, interaction.guild))
-        await post_transcript(interaction.guild, channel, text)
-        owner = await get_owner(interaction.guild, channel)
-        if owner:
-            try:
-                await owner.send("Your ticket was closed. Here's the transcript, and we'd love a review:", file=transcript_file(text, channel.name), view=ReviewView())
-            except discord.Forbidden:
-                pass
-        await asyncio.sleep(5)
-        await channel.delete()
+        await interaction.response.send_message(f'🔒 Ticket closed by {interaction.user.mention}. Closing in 5 seconds, saving transcript...', allowed_mentions=discord.AllowedMentions.none())
+        await close_ticket(interaction.guild, channel, interaction.user)
+
+@bot.tree.command(name='close', description='Close this ticket and save the transcript')
+@app_commands.describe(reason='Why the ticket is being closed (optional)')
+async def close_cmd(interaction: discord.Interaction, reason: Optional[str]=None):
+    channel = interaction.channel
+    if not is_ticket(channel):
+        return await interaction.response.send_message('Use this inside a ticket channel.', ephemeral=True)
+    if not can_close(interaction.user, channel):
+        return await interaction.response.send_message('Only staff or the ticket owner can close this ticket.', ephemeral=True)
+    note = f'\n**Reason:** {reason[:500]}' if reason else ''
+    await interaction.response.send_message(f'🔒 Ticket closed by {interaction.user.mention}.{note}\nClosing in 5 seconds, saving transcript...', allowed_mentions=discord.AllowedMentions.none())
+    await close_ticket(interaction.guild, channel, interaction.user, reason[:500] if reason else None)
 
 async def handle_open(interaction: discord.Interaction, kind: str):
     if not data['tickets_enabled']:
@@ -477,8 +505,8 @@ class PurgeTicketsView(discord.ui.View):
         for c in tickets:
             try:
                 if self.save_transcripts:
-                    text = await build_transcript(c)
-                    await post_transcript(guild, c, text, '(purged)')
+                    text = await build_transcript(c, f'{interaction.user} ({interaction.user.id})', 'Ticket purge')
+                    await post_transcript(guild, c, text, f'(purged by {interaction.user})')
                 await c.delete(reason=f'Ticket purge by {interaction.user}')
                 deleted += 1
             except discord.HTTPException:
@@ -736,7 +764,7 @@ async def help_cmd(interaction: discord.Interaction):
     e = Embed(title=f'📖 {BUSINESS_NAME} • Command Guide', description=f'Everything the bot can do, grouped by category.\n*Commands marked (staff) only show for staff.*\n{DIV}', color=BRAND_COLOR)
     if guild_icon(interaction.guild):
         e.set_thumbnail(url=guild_icon(interaction.guild))
-    e.add_field(name='🎫 Tickets', value='/on · /off · /unhide · /hidetoggle · /reseller-ticket · /escalate · /addticket · /purgetickets (staff)', inline=False)
+    e.add_field(name='🎫 Tickets', value='/close · /on · /off · /unhide · /hidetoggle · /reseller-ticket · /escalate · /addticket · /purgetickets (staff)', inline=False)
     e.add_field(name='⭐ Vouches', value='/vouch · /vouchstats', inline=False)
     e.add_field(name='🔨 Moderation', value='/kick · /ban · /idban · /softban · /unban · /timeout · /untimeout · /warn · /warnings · /delwarn · /clearwarnings · /nick · /addrole · /removerole · /purge · /slowmode · /lock · /unlock', inline=False)
     e.add_field(name='🏠 Server', value='/website · /setwebsite · /setimage · /embed · /ticketpanel · /say (staff)', inline=False)
@@ -3124,7 +3152,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.channel.send(embed=e, view=MediaView())
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
-PUBLIC_CMDS = {'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
+PUBLIC_CMDS = {'close', 'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
 PERM_BY_CMD = {'stafftos': 'administrator', 'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
 
 def apply_visibility(tree):
@@ -4176,7 +4204,7 @@ class TicketTools(commands.Cog):
         await interaction.response.send_message(msg, ephemeral=True)
 
     async def close_quiet(self, ch):
-        text = await build_transcript(ch)
+        text = await build_transcript(ch, 'Auto-close system (no activity)', 'Ticket went quiet')
         await post_transcript(ch.guild, ch, text, '(auto-closed, no activity)')
         owner = await get_owner(ch.guild, ch)
         if owner:
