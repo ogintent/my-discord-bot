@@ -4605,7 +4605,7 @@ class ActivityCheck(commands.Cog):
 
     def cfg(self):
         c = self.bot.data.setdefault('activity', {})
-        for k, v in (('channel', 0), ('guild', 0), ('daily', False), ('hour', 12), ('next', 1), ('last_day', ''), ('active', None)):
+        for k, v in (('channel', 0), ('guild', 0), ('daily', False), ('hour', 12), ('every', 2), ('next', 1), ('last_day', ''), ('active', None)):
             c.setdefault(k, v)
         c.setdefault('exempt', [])
         c.setdefault('strikes', {})
@@ -4747,14 +4747,14 @@ class ActivityCheck(commands.Cog):
                 now = datetime.now(ET)
                 sched = now.replace(hour=c['hour'], minute=0, second=0, microsecond=0)
                 today = now.strftime('%Y-%m-%d')
-                if c['last_day'] != today and now >= sched:
-                    if now - sched < timedelta(hours=3):
-                        ok, text = await self.post(guild)
-                        if not ok:
-                            print(f'[activity] {text}')
-                    else:
-                        c['last_day'] = today
-                        self.bot.save_data()
+                try:
+                    gap = (now.date() - datetime.strptime(c['last_day'], '%Y-%m-%d').date()).days if c['last_day'] else 999
+                except ValueError:
+                    gap = 999
+                if gap >= max(1, c['every']) and now >= sched and (now - sched < timedelta(hours=3)):
+                    ok, text = await self.post(guild)
+                    if not ok:
+                        print(f'[activity] {text}')
         except Exception as ex:
             print(f'[activity] {ex!r}')
 
@@ -4762,10 +4762,10 @@ class ActivityCheck(commands.Cog):
     async def before_tick(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name='staffactivitycheck', description='Post a staff activity check, or set up the daily one (management)')
-    @app_commands.describe(action='What to do (default: post a check now)', channel='Channel for the checks (for setup)', hour='Daily time in Eastern Time, 0-23 (12 = noon)', member='A staff member (for exempt / reset)')
-    @app_commands.choices(action=[app_commands.Choice(name='Post a check now', value='send'), app_commands.Choice(name='Set up the daily check', value='setup'), app_commands.Choice(name='Turn the daily check off', value='off'), app_commands.Choice(name='Status', value='status'), app_commands.Choice(name='Excuse / un-excuse a member', value='exempt'), app_commands.Choice(name="Clear a member's missed checks", value='reset')])
-    async def staffactivitycheck(self, interaction: discord.Interaction, action: Optional[app_commands.Choice[str]]=None, channel: Optional[discord.TextChannel]=None, hour: Optional[app_commands.Range[int, 0, 23]]=None, member: Optional[discord.Member]=None):
+    @app_commands.command(name='staffactivitycheck', description='Post a staff activity check, or set up the repeating one (management)')
+    @app_commands.describe(action='What to do (default: post a check now)', channel='Channel for the checks (for setup)', hour='Time of day in Eastern Time, 0-23 (12 = noon)', days='Days between checks (default 2 = every 48 hours)', member='A staff member (for exempt / reset)')
+    @app_commands.choices(action=[app_commands.Choice(name='Post a check now', value='send'), app_commands.Choice(name='Set up the automatic check', value='setup'), app_commands.Choice(name='Turn the automatic check off', value='off'), app_commands.Choice(name='Status', value='status'), app_commands.Choice(name='Excuse / un-excuse a member', value='exempt'), app_commands.Choice(name="Clear a member's missed checks", value='reset')])
+    async def staffactivitycheck(self, interaction: discord.Interaction, action: Optional[app_commands.Choice[str]]=None, channel: Optional[discord.TextChannel]=None, hour: Optional[app_commands.Range[int, 0, 23]]=None, days: Optional[app_commands.Range[int, 1, 14]]=None, member: Optional[discord.Member]=None):
         u = interaction.user
         if not (is_manager(u) or u.guild_permissions.administrator or u.id == interaction.guild.owner_id):
             return await interaction.response.send_message('Only management can use this.', ephemeral=True)
@@ -4780,13 +4780,13 @@ class ActivityCheck(commands.Cog):
             ch = channel or self.find_channel(g)
             if ch is None:
                 return await interaction.response.send_message('Pick the channel with the `channel` option.', ephemeral=True)
-            c.update(channel=ch.id, guild=g.id, daily=True, hour=hour if hour is not None else c['hour'])
+            c.update(channel=ch.id, guild=g.id, daily=True, hour=hour if hour is not None else c['hour'], every=days if days is not None else c['every'])
             self.bot.save_data()
-            return await interaction.response.send_message(f"✅ Daily activity check is **ON**: every day at **{act_time(c['hour'])}** in {ch.mention}. Staff get {ACT_HOURS} hours to react, then anyone who didn't is warned automatically.", ephemeral=True)
+            return await interaction.response.send_message(f"✅ Automatic activity check is **ON**: every **{c['every'] * 24} hours** ({c['every']} day(s)) at **{act_time(c['hour'])}** in {ch.mention}. Staff get {ACT_HOURS} hours to react, then anyone who didn't is warned automatically.", ephemeral=True)
         if act == 'off':
             c['daily'] = False
             self.bot.save_data()
-            return await interaction.response.send_message('Daily activity check is **OFF**. (A check that is already running still finishes.)', ephemeral=True)
+            return await interaction.response.send_message('Automatic activity check is **OFF**. (A check that is already running still finishes.)', ephemeral=True)
         if act in ('exempt', 'reset'):
             if member is None:
                 return await interaction.response.send_message('Pick the staff member with the `member` option.', ephemeral=True)
@@ -4804,7 +4804,7 @@ class ActivityCheck(commands.Cog):
             return await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
         ch = self.find_channel(g)
         e = Embed(title='📋 Staff activity checks', color=discord.Color.green() if c['daily'] else discord.Color.red())
-        e.add_field(name='Daily check', value=f"ON · {act_time(c['hour'])}" if c['daily'] else 'OFF')
+        e.add_field(name='Automatic check', value=f"ON · every {c['every'] * 24}h · {act_time(c['hour'])}" if c['daily'] else 'OFF')
         e.add_field(name='Channel', value=ch.mention if ch else '❌ not found')
         e.add_field(name='Next number', value=f"#{c['next']}")
         if c['active']:
