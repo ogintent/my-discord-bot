@@ -3152,7 +3152,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.channel.send(embed=e, view=MediaView())
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
-PUBLIC_CMDS = {'close', 'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
+PUBLIC_CMDS = {'keycheck', 'close', 'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
 PERM_BY_CMD = {'stafftos': 'administrator', 'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
 
 def apply_visibility(tree):
@@ -4815,4 +4815,73 @@ class ActivityCheck(commands.Cog):
         e.add_field(name='Excused', value=' '.join((f'<@{i}>' for i in c['exempt'])) or 'Nobody', inline=False)
         e.add_field(name='Server Members Intent', value='✅ on' if self.bot.intents.members else '❌ off (set MEMBERS_INTENT=1 so every staff member is tracked)', inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+import secrets
+KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+KEY_SECRET = 'FrontlineCheats2026KeyAuth-v1'
+KEY_PRODUCT = 'Frontline Cheats'
+KEY_FOOTER = 'Frontline Cheats • .gg/frontlinecheats'
+KEY_ROLE_NAMES = {'owner', 'admin', 'staff', 'key manager'}
+
+def key_checksum(body12):
+    n = 0
+    mixed = body12 + KEY_SECRET
+    for i, c in enumerate(mixed):
+        n = n * 33 + ord(c) * (i + 1) & 4294967295
+    out = ''
+    for _ in range(4):
+        out += KEY_ALPHABET[n % len(KEY_ALPHABET)]
+        n = n * 1103515245 + 12345 & 4294967295
+    return out
+
+def generate_key():
+    body = ''.join((secrets.choice(KEY_ALPHABET) for _ in range(12)))
+    full = body + key_checksum(body)
+    return '-'.join((full[i:i + 4] for i in range(0, 16, 4)))
+
+def validate_key(key):
+    k = re.sub('[^A-Za-z0-9]', '', key or '').upper()
+    return len(k) == 16 and k[12:] == key_checksum(k[:12])
+
+def can_keygen(member):
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild.owner_id == member.id or member.guild_permissions.administrator:
+        return True
+    return any((role_base(r.name) in KEY_ROLE_NAMES for r in member.roles))
+
+def keygen_embed(keys, note=None):
+    e = discord.Embed(title=f'🔑 {KEY_PRODUCT} License Keys', description='\n'.join((f'`{k}`' for k in keys)), color=6086143, timestamp=discord.utils.utcnow())
+    if note:
+        e.add_field(name='📝 Note', value=note[:500], inline=False)
+    e.set_footer(text=KEY_FOOTER)
+    return e
+
+@bot.tree.command(name='keygen', description='Generate signed license keys (admin)')
+@app_commands.describe(amount='How many keys (1-25)', note='Optional note', public='Show the keys to everyone in the channel (default: only you)')
+async def keygen_cmd(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 25]=1, note: Optional[str]=None, public: bool=False):
+    if not can_keygen(interaction.user):
+        return await interaction.response.send_message('You are not allowed to generate keys.', ephemeral=True)
+    keys = [generate_key() for _ in range(amount)]
+    assert all((validate_key(k) for k in keys))
+    await interaction.response.send_message(embed=keygen_embed(keys, note), ephemeral=not public)
+
+@bot.tree.command(name='keycheck', description='Check whether a license key is valid')
+@app_commands.describe(key='The key, like XXXX-XXXX-XXXX-XXXX')
+async def keycheck_cmd(interaction: discord.Interaction, key: str):
+    ok = validate_key(key)
+    e = discord.Embed(title=f'✅ Valid {KEY_PRODUCT} key' if ok else f'❌ Invalid {KEY_PRODUCT} key', description='This key is correctly signed.' if ok else "This key isn't valid. Check for typos.", color=discord.Color.green() if ok else discord.Color.red())
+    e.set_footer(text=KEY_FOOTER)
+    await interaction.response.send_message(embed=e, ephemeral=True)
+
+@bot.command(name='keygen')
+async def keygen_prefix(ctx, amount: int=1):
+    if not can_keygen(ctx.author):
+        return await ctx.reply('You are not allowed to generate keys.', mention_author=False)
+    amount = max(1, min(25, amount))
+    keys = [generate_key() for _ in range(amount)]
+    assert all((validate_key(k) for k in keys))
+    await ctx.reply(embed=keygen_embed(keys), mention_author=False)
+for _ in range(500):
+    assert validate_key(generate_key())
+assert not validate_key('AAAA-BBBB-CCCC-DDDD')
 bot.run(os.getenv('DISCORD_TOKEN'))
