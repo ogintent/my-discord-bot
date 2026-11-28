@@ -770,7 +770,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='🔨 Moderation', value='/kick · /ban · /idban · /softban · /unban · /timeout · /untimeout · /warn · /warnings · /delwarn · /clearwarnings · /nick · /addrole · /removerole · /purge · /slowmode · /lock · /unlock', inline=False)
     e.add_field(name='🏠 Server', value='/website · /setwebsite · /setimage · /embed · /ticketpanel · /say (staff)', inline=False)
     e.add_field(name='🛡️ Protection', value='/antispam · /antinuke (server owner) · /filter · /censor · /ipblock', inline=False)
-    e.add_field(name='🧰 Staff Tools', value='/whois · /altcheck · /bothealth · /steal · /ref-embed · /ai-knowledge · /faq-setup', inline=False)
+    e.add_field(name='🧰 Staff Tools', value='/whois · /altcheck · /bothealth · /tools steal · /tools refembed · /tools knowledge · /tools faq', inline=False)
     e.add_field(name='🎉 Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='🛒 Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
     e.add_field(name='🎟️ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
@@ -2471,6 +2471,7 @@ class IPBlock(commands.GroupCog, name='ipblock'):
         await interaction.response.send_message(embed=Embed(title='🕒 Recently blocked IPs', description=text, color=discord.Color.red()), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 class Tools(commands.Cog):
+    tools_group = app_commands.Group(name='tools', description='Admin helpers: emoji steal, referral post, AI knowledge, FAQ')
 
     def __init__(self, bot):
         self.bot = bot
@@ -2587,7 +2588,7 @@ class Tools(commands.Cog):
         e.add_field(name='My permissions', value='\n'.join((f"{('✅' if ok else '❌')} {n}" for n, ok in need)), inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
 
-    @app_commands.command(name='steal', description='Copy a custom emoji into this server (admin)')
+    @tools_group.command(name='steal', description='Copy a custom emoji into this server (admin)')
     @app_commands.describe(emoji='Paste the custom emoji here', name='New name (optional)')
     @admin_only()
     async def steal(self, interaction: discord.Interaction, emoji: str, name: Optional[app_commands.Range[str, 2, 32]]=None):
@@ -2609,7 +2610,7 @@ class Tools(commands.Cog):
             return await interaction.followup.send(f'❌ Discord refused: {ex.text}. (I need **Manage Expressions**, and the server needs a free emoji slot.)', ephemeral=True)
         await interaction.followup.send(f'✅ Added {new} as `:{new.name}:`.', ephemeral=True)
 
-    @app_commands.command(name='ref-embed', description='Post the referral program announcement (admin)')
+    @tools_group.command(name='refembed', description='Post the referral program announcement (admin)')
     @app_commands.describe(channel='Where to post it', reward='What the referrer gets, e.g. 10% off their next order', friend_reward='What the new customer gets (optional)')
     @admin_only()
     async def ref_embed(self, interaction: discord.Interaction, channel: discord.TextChannel, reward: app_commands.Range[str, 1, 200]='a reward on their next order', friend_reward: Optional[app_commands.Range[str, 1, 200]]=None):
@@ -2628,7 +2629,7 @@ class Tools(commands.Cog):
             return await interaction.response.send_message(f"I can't post in {channel.mention}.", ephemeral=True)
         await interaction.response.send_message(f'✅ Posted in {channel.mention}.', ephemeral=True)
 
-    @app_commands.command(name='ai-knowledge', description='Post what the support AI knows about your shop (admin)')
+    @tools_group.command(name='knowledge', description='Post what the support AI knows about your shop (admin)')
     @admin_only()
     async def ai_knowledge(self, interaction: discord.Interaction, channel: discord.TextChannel):
         info = self.bot.get_cog('ai').cfg()['info'].strip()
@@ -2677,7 +2678,7 @@ class Tools(commands.Cog):
             print(f'[FAQ] {ex!r}')
             return False
 
-    @app_commands.command(name='faq-setup', description='Post an AI-written FAQ in a channel and keep it updated (admin)')
+    @tools_group.command(name='faq', description='Post an AI-written FAQ in a channel and keep it updated (admin)')
     @admin_only()
     async def faq_setup(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
@@ -3154,7 +3155,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'keycheck', 'close', 'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'stafftos': 'administrator', 'sentkeys': 'administrator', 'activekeys': 'manage_messages', 'keygen': 'manage_messages', 'hwidreset': 'manage_messages', 'bindkey': 'manage_messages', 'revoke': 'manage_messages', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
+PERM_BY_CMD = {'stafftos': 'administrator', 'sentkeys': 'administrator', 'activekeys': 'manage_messages', 'keygen': 'manage_messages', 'hwidreset': 'manage_messages', 'bindkey': 'manage_messages', 'revoke': 'manage_messages', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixchannels': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'tools': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -3482,7 +3483,7 @@ class FixConfirm(discord.ui.View):
         async def progress(n, total):
             await interaction.edit_original_response(content=f'⏳ Renaming... {n}/{total}')
         ok, failed = await fix_apply(interaction.guild, self.plan, self.order, interaction.user, progress)
-        text = f'✅ Done! Renamed **{ok}** channels' + (' and reordered the categories' if self.order else '') + '. Use `/fixchannels-undo` to restore the old names.'
+        text = f'✅ Done! Renamed **{ok}** channels' + (' and reordered the categories' if self.order else '') + '. Use `/fixchannels` with `undo: True` to restore the old names.'
         if failed:
             text += f"\n⚠️ I couldn't rename: {', '.join(failed[:10])} (check my Manage Channels permission and role position)."
         await interaction.edit_original_response(content=text)
@@ -3494,10 +3495,12 @@ class FixConfirm(discord.ui.View):
         self.stop()
 
 @bot.tree.command(name='fixchannels', description='Tidy channel names with emojis and a clean style (admin)')
-@app_commands.describe(style='How names look', reorder_categories='Also put categories in a standard order (info, community, shop, support...)')
+@app_commands.describe(style='How names look', reorder_categories='Also put categories in a standard order (info, community, shop, support...)', undo='Restore the names from before the last /fixchannels instead')
 @app_commands.choices(style=[app_commands.Choice(name='💬・general (dot)', value='dot'), app_commands.Choice(name='💬┃general (bar)', value='bar'), app_commands.Choice(name='💬»general (arrow)', value='arrow'), app_commands.Choice(name='💬-general (dash)', value='dash')])
 @app_commands.checks.has_permissions(administrator=True)
-async def fixchannels(interaction: discord.Interaction, style: Optional[app_commands.Choice[str]]=None, reorder_categories: bool=False):
+async def fixchannels(interaction: discord.Interaction, style: Optional[app_commands.Choice[str]]=None, reorder_categories: bool=False, undo: bool=False):
+    if undo:
+        return await fixchannels_undo(interaction)
     g = interaction.guild
     if not g.me.guild_permissions.manage_channels:
         return await interaction.response.send_message('I need the **Manage Channels** permission first.', ephemeral=True)
@@ -3510,11 +3513,9 @@ async def fixchannels(interaction: discord.Interaction, style: Optional[app_comm
         shown += f'\n… and {len(lines) - 25} more'
     e = Embed(title='✨ Channel makeover preview', description=f'```{shown[:3800]}```', color=discord.Color.blurple())
     e.add_field(name='Changes', value=f'**{len(plan)}** channels renamed' + (f'\n**{len(order)}** categories moved' if order else ''), inline=False)
-    e.set_footer(text='I never delete channels, and ticket channels are skipped. Existing emojis are kept. /fixchannels-undo restores everything.')
+    e.set_footer(text='I never delete channels, and ticket channels are skipped. Existing emojis are kept. /fixchannels with undo: True restores everything.')
     await interaction.response.send_message(embed=e, view=FixConfirm(interaction.user.id, plan, order), ephemeral=True)
 
-@bot.tree.command(name='fixchannels-undo', description='Restore the channel names from before the last /fixchannels (admin)')
-@app_commands.checks.has_permissions(administrator=True)
 async def fixchannels_undo(interaction: discord.Interaction):
     snap = data.get('fixchannels')
     if not snap:
@@ -3525,7 +3526,7 @@ async def fixchannels_undo(interaction: discord.Interaction):
         ch = g.get_channel(int(cid))
         try:
             if ch is not None and ch.name != old:
-                await ch.edit(name=old, reason=f'/fixchannels-undo by {interaction.user}')
+                await ch.edit(name=old, reason=f'/fixchannels undo by {interaction.user}')
                 ok += 1
         except discord.HTTPException:
             pass
@@ -3533,7 +3534,7 @@ async def fixchannels_undo(interaction: discord.Interaction):
         ch = g.get_channel(int(cid))
         try:
             if ch is not None:
-                await ch.edit(position=pos, reason=f'/fixchannels-undo by {interaction.user}')
+                await ch.edit(position=pos, reason=f'/fixchannels undo by {interaction.user}')
         except discord.HTTPException:
             pass
     data.pop('fixchannels', None)
@@ -3606,7 +3607,7 @@ class FixRolesConfirm(discord.ui.View):
         async def progress(n, total):
             await interaction.edit_original_response(content=f'⏳ Updating... {n}/{total}')
         ok, failed = await role_apply(interaction.guild, self.plan, interaction.user, progress)
-        text = f'✅ Done! Updated **{ok}** roles. Use `/fixroles-undo` to restore them.'
+        text = f'✅ Done! Updated **{ok}** roles. Use `/fixroles` with `undo: True` to restore them.'
         if failed:
             text += f"\n⚠️ I couldn't edit: {', '.join(failed[:10])}"
         await interaction.edit_original_response(content=text)
@@ -3618,9 +3619,11 @@ class FixRolesConfirm(discord.ui.View):
         self.stop()
 
 @bot.tree.command(name='fixroles', description='Rename every role to "Frontline | Role Name" (admin)')
-@app_commands.describe(colors='Give colors to roles that have none', hoist_staff='Show staff roles as their own group in the member list')
+@app_commands.describe(colors='Give colors to roles that have none', hoist_staff='Show staff roles as their own group in the member list', undo='Restore the roles from before the last /fixroles instead')
 @app_commands.checks.has_permissions(administrator=True)
-async def fixroles(interaction: discord.Interaction, colors: bool=False, hoist_staff: bool=False):
+async def fixroles(interaction: discord.Interaction, colors: bool=False, hoist_staff: bool=False, undo: bool=False):
+    if undo:
+        return await fixroles_undo(interaction)
     g = interaction.guild
     if not g.me.guild_permissions.manage_roles:
         return await interaction.response.send_message('I need the **Manage Roles** permission first.', ephemeral=True)
@@ -3631,11 +3634,9 @@ async def fixroles(interaction: discord.Interaction, colors: bool=False, hoist_s
     shown = '\n'.join(lines[:25]) + (f'\n… and {len(lines) - 25} more' if len(lines) > 25 else '')
     e = Embed(title='✨ Role rename preview', description=f'```{shown[:3800]}```', color=discord.Color.blurple())
     e.add_field(name='Changes', value=f'**{len(plan)}** roles', inline=False)
-    e.set_footer(text='Permissions and role order are never touched. Bot roles and roles above mine are skipped. /fixroles-undo restores everything.')
+    e.set_footer(text='Permissions and role order are never touched. Bot roles and roles above mine are skipped. /fixroles with undo: True restores everything.')
     await interaction.response.send_message(embed=e, view=FixRolesConfirm(interaction.user.id, plan), ephemeral=True)
 
-@bot.tree.command(name='fixroles-undo', description='Restore roles to how they were before the last /fixroles (admin)')
-@app_commands.checks.has_permissions(administrator=True)
 async def fixroles_undo(interaction: discord.Interaction):
     snap = data.get('fixroles')
     if not snap:
@@ -3646,7 +3647,7 @@ async def fixroles_undo(interaction: discord.Interaction):
         role = interaction.guild.get_role(int(rid))
         try:
             if role is not None:
-                await role.edit(name=old['name'], color=discord.Colour(old['color']), hoist=old['hoist'], reason=f'/fixroles-undo by {interaction.user}')
+                await role.edit(name=old['name'], color=discord.Colour(old['color']), hoist=old['hoist'], reason=f'/fixroles undo by {interaction.user}')
                 ok += 1
         except discord.HTTPException:
             pass
@@ -4466,10 +4467,18 @@ class KeysView(discord.ui.View):
         await interaction.response.edit_message(embed=KeysView(self.owner_id, self.entries, self.page + 1).embed(), view=KeysView(self.owner_id, self.entries, self.page + 1))
 
 @bot.tree.command(name='sentkeys', description='List every product key sent with /dmkey (server owner only)')
-@app_commands.describe(product='Only show one product (optional)', user='Only show keys sent to one person (optional)')
+@app_commands.describe(product='Only show one product (optional)', user='Only show keys sent to one person (optional)', remove='Delete the record with this # instead of listing (optional)')
 @app_commands.autocomplete(product=product_autocomplete)
 @owner_only()
-async def sentkeys(interaction: discord.Interaction, product: Optional[str]=None, user: Optional[discord.User]=None):
+async def sentkeys(interaction: discord.Interaction, product: Optional[str]=None, user: Optional[discord.User]=None, remove: Optional[int]=None):
+    if remove is not None:
+        k = key_table()
+        hit = next((e for e in k['list'] if e['id'] == remove), None)
+        if hit is None:
+            return await interaction.response.send_message('No key record with that number.', ephemeral=True)
+        k['list'].remove(hit)
+        save_data()
+        return await interaction.response.send_message(f"🗑️ Removed record #{remove} ({hit['product']}). This only deletes the record here. It doesn't disable the key itself.", ephemeral=True)
     entries = list(reversed(key_table()['list']))
     if product:
         hit = find_product(product)
@@ -4480,18 +4489,6 @@ async def sentkeys(interaction: discord.Interaction, product: Optional[str]=None
         return await interaction.response.send_message('No keys found. Keys show up here after you use `/dmkey`.', ephemeral=True)
     view = KeysView(interaction.user.id, entries)
     await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-
-@bot.tree.command(name='removekey', description='Delete a key record by its number (server owner only)')
-@app_commands.describe(number='The # shown in /sentkeys')
-@owner_only()
-async def removekey(interaction: discord.Interaction, number: int):
-    k = key_table()
-    hit = next((e for e in k['list'] if e['id'] == number), None)
-    if hit is None:
-        return await interaction.response.send_message('No key record with that number.', ephemeral=True)
-    k['list'].remove(hit)
-    save_data()
-    await interaction.response.send_message(f"🗑️ Removed record #{number} ({hit['product']}). This only deletes the record here. It doesn't disable the key itself.", ephemeral=True)
 STAFF_TOS = [('📋 GENERAL RULES', ['Respect all members and staff.', 'No disrespect toward higher-ups.', 'No abusing staff permissions.', 'No leaking private information.', 'No unnecessary drama or harassment.', 'Follow management instructions.', 'No NSFW content.', 'No inappropriate behavior.']), ('🎫 CUSTOMER SUPPORT', ['Treat customers respectfully.', 'No scamming or misleading customers.', 'No leaking customer information.', 'Do not ignore tickets.', 'No unauthorized refunds or discounts.']), ('📈 ACTIVITY', ['Stay active.', 'Complete assigned duties.', 'Notify management about inactivity.', 'Do not fake activity.']), ('⚠️ PUNISHMENTS  ›  WARNING', ['Minor disrespect.', 'Minor rule violations.', 'Ignoring instructions.']), ('⚠️ PUNISHMENTS  ›  2 WARNINGS', ['Repeated rule violations.', 'Disrespect toward higher-ups.', 'Repeated inactivity.']), ('⚠️ PUNISHMENTS  ›  DEMOTION', ['Repeated warnings.', 'Permission abuse.', 'Leaking staff chats.', 'Failure to perform duties.']), ('⚠️ PUNISHMENTS  ›  STAFF BLACKLIST', ['Scamming or stealing.', 'Leaking sensitive information.', 'Severe harassment or threats.', 'Severe NSFW misconduct.', 'Server sabotage.', 'Serious abuse of authority.']), ('👑 MANAGEMENT', ['Management handles punishments.', 'Serious violations can result in immediate removal.', 'Punishments depend on severity.', 'Appeals must go through management.'])]
 STAFF_TOS_FINAL = 'Being staff is a privilege, not a right. Breaking these rules can result in warnings, demotion, or permanent staff blacklisting.'
 
