@@ -16,12 +16,13 @@ GUILD_ID = int(os.getenv('GUILD_ID', '0'))
 VOUCH_ROLE_ID = int(os.getenv('VOUCH_ROLE_ID', '0'))
 VOUCH_CHANNEL_ID = int(os.getenv('VOUCH_CHANNEL_ID', '0'))
 MOD_LOG_CHANNEL_ID = int(os.getenv('MOD_LOG_CHANNEL_ID', '0'))
-BUSINESS_NAME = 'Frontline'
+BUSINESS_NAME = os.getenv('BUSINESS_NAME', 'Frontline Cheats X DemoWare')
+INVITE_FOOTER = os.getenv('INVITE_FOOTER', '.gg/frontlinecheats • .gg/demoware')
 VOUCH_COOLDOWN_SECONDS = 30
 intents = discord.Intents.default()
 intents.message_content = os.getenv('MESSAGE_CONTENT') == '1'
 intents.members = os.getenv('MEMBERS_INTENT') == '1'
-PANEL_TITLE = '◆ Frontline Support'
+PANEL_TITLE = '◆ Frontline Cheats X DemoWare Support'
 PANEL_LINES = ['TO PURCHASE MANUALLY, PRESS PURCHASE.', 'DO NOT ASK TO ASK. SIMPLY ASK YOUR QUESTION.', 'FOR MEDIA APPLICATIONS. PRESS "MEDIA" BUTTON.', 'FOR AUTOMATIC DELIVERY, USE THE WEBSITE.']
 PAYMENT_METHODS = ['💰 CRYPTO CURRENCIES', '💰 PAYPAL (FAMILY & FRIENDS) (MUST PAY ON DISCORD)', '💰 CASHAPP', '💰 CREDIT CARDS (MUST PAY ON DISCORD)', '💰 ZELLE (MUST PAY ON DISCORD)', '💰 VENMO (MUST PAY ON DISCORD)']
 PANEL_COLOR = 15844367
@@ -41,7 +42,9 @@ class Embed(discord.Embed):
     def to_dict(self):
         d = super().to_dict()
         if 'footer' not in d and (d.get('title') or d.get('fields')):
-            d['footer'] = {'text': f"{BUSINESS_NAME} • {INVITE_URL.replace('https://', '')}"}
+            d['footer'] = {'text': BUSINESS_NAME}
+        if 'footer' in d and INVITE_FOOTER not in d['footer'].get('text', ''):
+            d['footer'] = dict(d['footer'], text=f"{d['footer'].get('text', '')} • {INVITE_FOOTER}".lstrip(' •')[:2048])
         if 'timestamp' not in d and d.get('title'):
             d['timestamp'] = discord.utils.utcnow().isoformat()
         return d
@@ -60,14 +63,71 @@ def load_data():
     for k, v in DEFAULTS.items():
         d.setdefault(k, copy.deepcopy(v))
     return d
+import contextvars
+from collections.abc import MutableMapping
+ROOT = load_data()
+CUR_GUILD = contextvars.ContextVar('cur_guild', default=0)
+GLOBAL_KEYS = {'_guilds', 'license_keys', 'primary_guild'}
+
+def primary_guild():
+    return int(ROOT.get('primary_guild') or GUILD_ID or 0)
+
+def guild_store(gid):
+    """Settings for one server. The main server keeps using the original data; every other server gets its own copy."""
+    p = primary_guild()
+    if not gid or not p or gid == p:
+        return ROOT
+    gs = ROOT.setdefault('_guilds', {}).setdefault(str(gid), {})
+    for k, v in DEFAULTS.items():
+        gs.setdefault(k, copy.deepcopy(v))
+    return gs
+
+class GuildData(MutableMapping):
+    """Looks like the old global `data` dict, but silently points at the server the current command/event belongs to."""
+
+    def _d(self, key):
+        return ROOT if key in GLOBAL_KEYS else guild_store(CUR_GUILD.get())
+
+    def __getitem__(self, k):
+        return self._d(k)[k]
+
+    def __setitem__(self, k, v):
+        self._d(k)[k] = v
+
+    def __delitem__(self, k):
+        del self._d(k)[k]
+
+    def __iter__(self):
+        return iter(guild_store(CUR_GUILD.get()))
+
+    def __len__(self):
+        return len(guild_store(CUR_GUILD.get()))
+
+    def __contains__(self, k):
+        return k in self._d(k)
+data = GuildData()
+
+def gcfg(guild):
+    return guild_store(guild.id if guild is not None else 0)
+
+class in_guild:
+    """with in_guild(guild_id): ... runs code using that server's settings (used by background loops)."""
+
+    def __init__(self, gid):
+        self.gid = gid
+
+    def __enter__(self):
+        self.tok = CUR_GUILD.set(self.gid)
+
+    def __exit__(self, *a):
+        CUR_GUILD.reset(self.tok)
 backup_state = {'restored': os.path.exists(DATA_FILE), 'dirty': False, 'msg_id': 0, 'last': 0, 'error': ''}
 
 def save_data():
     os.makedirs(os.path.dirname(os.path.abspath(DATA_FILE)), exist_ok=True)
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2)
+        json.dump(ROOT, f, indent=2)
     backup_state['dirty'] = True
-data = load_data()
 
 class MyBot(commands.Bot):
 
@@ -96,20 +156,59 @@ class MyBot(commands.Bot):
         await self.add_cog(ActivityCheck(self))
         await self.add_cog(KeyAuthServer(self))
         apply_visibility(self.tree)
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            self.tree.clear_commands(guild=None)
-            await self.tree.sync()
-        else:
-            synced = await self.tree.sync()
-        print(f'Synced {len(synced)} commands')
+        self.synced_once = False
+        parsers = self._connection.parsers
+        for name, fn in list(parsers.items()):
+            parsers[name] = self.with_guild(name, fn)
+
+    @staticmethod
+    def with_guild(name, fn):
+        """Every gateway event first records which server it belongs to, so settings follow the right server."""
+
+        def wrapped(payload):
+            gid = None
+            if isinstance(payload, dict):
+                gid = payload.get('guild_id') or (payload.get('id') if name.startswith('GUILD_') and name.count('_') == 1 else None)
+            CUR_GUILD.set(int(gid) if gid else 0)
+            return fn(payload)
+        return wrapped
+
+    async def sync_guild(self, guild):
+        self.tree.copy_global_to(guild=guild)
+        return await self.tree.sync(guild=guild)
+
+    async def sync_everywhere(self):
+        total = 0
+        for g in self.guilds:
+            try:
+                total = len(await self.sync_guild(g))
+            except discord.HTTPException as ex:
+                print(f'[sync] {g.name}: {ex}')
+        try:
+            await self.http.bulk_upsert_global_commands(self.application_id, [])
+        except discord.HTTPException as ex:
+            print(f'[sync] clearing global commands: {ex}')
+        print(f'Synced {total} commands to {len(self.guilds)} server(s)')
 bot = MyBot(command_prefix='!', intents=intents)
 
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
+    if not ROOT.get('primary_guild'):
+        main = GUILD_ID or (bot.guilds[0].id if bot.guilds else 0)
+        if main:
+            ROOT['primary_guild'] = main
+            save_data()
+    if not getattr(bot, 'synced_once', True):
+        bot.synced_once = True
+        await bot.sync_everywhere()
+
+@bot.event
+async def on_guild_join(guild):
+    try:
+        await bot.sync_guild(guild)
+    except discord.HTTPException as ex:
+        print(f'[sync] {guild.name}: {ex}')
 
 @bot.tree.error
 async def on_app_error(interaction: discord.Interaction, error):
@@ -123,8 +222,33 @@ async def on_app_error(interaction: discord.Interaction, error):
     else:
         await interaction.response.send_message(msg, ephemeral=True)
 
+def staff_role(guild):
+    """The staff role of a server: set with /serverconfig, else the STAFF_ROLE_ID variable, else a role named Staff."""
+    if guild is None:
+        return None
+    for rid in (gcfg(guild).get('staff_role'), STAFF_ROLE_ID):
+        r = guild.get_role(int(rid or 0))
+        if r is not None:
+            return r
+    return next((r for r in guild.roles if re.sub('^[^\\w]*(?:[\\w ]+\\|)?\\s*', '', r.name).strip().lower() == 'staff'), None)
+
+def log_channel(guild):
+    for cid in (gcfg(guild).get('log_channel'), LOG_CHANNEL_ID):
+        ch = guild.get_channel(int(cid or 0)) if guild is not None else None
+        if ch is not None:
+            return ch
+    return None
+
+def mod_log_channel(guild):
+    for cid in (gcfg(guild).get('modlog_channel'), MOD_LOG_CHANNEL_ID):
+        ch = guild.get_channel(int(cid or 0)) if guild is not None else None
+        if ch is not None:
+            return ch
+    return None
+
 def is_staff(member):
-    return any((r.id == STAFF_ROLE_ID for r in member.roles)) or member.guild_permissions.administrator
+    sr = staff_role(member.guild)
+    return sr is not None and sr in member.roles or member.guild_permissions.administrator
 
 def staff_only():
 
@@ -165,9 +289,7 @@ async def mod_log(guild, action, moderator, target, reason=None, color=discord.C
     if getattr(moderator, 'id', None) and (not getattr(moderator, 'bot', False)):
         stats_for(moderator.id)['mod'] += 1
         save_data()
-    if not MOD_LOG_CHANNEL_ID:
-        return
-    ch = guild.get_channel(MOD_LOG_CHANNEL_ID)
+    ch = mod_log_channel(guild)
     if not ch:
         return
     e = Embed(title=action, color=color, timestamp=discord.utils.utcnow())
@@ -292,7 +414,7 @@ async def create_ticket(guild, user, kind):
     if existing:
         return (None, existing)
     label, emoji = TICKET_TYPES[kind]
-    staff = guild.get_role(STAFF_ROLE_ID)
+    staff = staff_role(guild)
     overwrites = {guild.default_role: discord.PermissionOverwrite(view_channel=False), user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True), staff: discord.PermissionOverwrite(view_channel=True, send_messages=True), guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)}
     report = kind == 'staffreport'
     esc = guild.get_role(ESCALATE_ROLE_ID) if ESCALATE_ROLE_ID else None
@@ -774,7 +896,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='🎉 Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='🛒 Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
     e.add_field(name='🎟️ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
-    e.add_field(name='💼 Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /dmkey · /sentkeys (owner) · /keygen · /activekeys · /hwidreset · /bindkey · /revoke · /keycheck · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
+    e.add_field(name='💼 Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /serverconfig · /dmkey · /sentkeys (owner) · /keygen · /activekeys · /hwidreset · /bindkey · /revoke · /keycheck · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
     e.add_field(name='⚙️ Server Tools', value='/scamguard · /mediapanel · /staffactivitycheck · /stafftos · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='💬 Info & Fun', value='/ping · /tos · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
@@ -1447,6 +1569,11 @@ class Giveaway(commands.GroupCog, name='giveaway'):
 
     @tasks.loop(seconds=5)
     async def tick(self):
+        for g in list(self.bot.guilds):
+            with in_guild(g.id):
+                await self.tick_one()
+
+    async def tick_one(self):
         now = time.time()
         for mid, gw in list(self.gws().items()):
             try:
@@ -1458,9 +1585,11 @@ class Giveaway(commands.GroupCog, name='giveaway'):
             except Exception as e:
                 print(f'Giveaway error ({mid}): {e}')
         for mid in list(self.dirty):
-            self.dirty.discard(mid)
             gw = self.gws().get(mid)
-            if not gw or gw['ended']:
+            if gw is None:
+                continue
+            self.dirty.discard(mid)
+            if gw['ended']:
                 continue
             try:
                 guild = self.bot.get_guild(gw['guild_id'])
@@ -1477,8 +1606,8 @@ APP_COLOR = 15844367
 APP_COOLDOWN = 7 * 86400
 APP_QUESTIONS = [('Age & Date of Birth', 'Example: 19 - 04/12/2006'), ('Timezone & availability', 'Your timezone, which days you can be active, and about how many hours per day.'), ('Have you ever been staff for ANY OTHER cheating service?', 'If yes: which ones, your role, and why you left. If no, just say "No".'), ('Have you ever cheated with any of our cheats/products?', 'Be honest. If yes, which product(s) and roughly when.'), ('Do you have any previous reseller, support or moderation experience?', 'Where, what you did, and for how long.'), ('Have you ever been banned from, scammed, leaked from, or caused a chargeback with a cheat provider or community?', 'If yes, explain what happened.'), ('Why do you want to join our team?', 'A few sentences is fine.'), ('Why should we pick you over other applicants?', 'What makes you a good fit?'), ('A customer says one of our products got them banned and demands a refund. What do you do?', "Walk us through how you'd handle it."), ('A customer asks you to "go outside the ticket" or pay a way we don\'t accept. How do you respond?', 'What would you say or do?'), ('You notice another staff member breaking rules or leaking information. What do you do?', 'Be specific.'), ('Do you understand payment methods like crypto, PayPal and CashApp, and the risks of scams and chargebacks?', 'Explain what you know and any experience you have.'), ('Are you comfortable keeping all customer and company information private?', "Tell us how you'd handle sensitive information."), ('Anything else we should know?', 'Optional. Type "none" to skip.')]
 APP_QUICK = {0: 'Age & DOB', 2: 'Staff for another cheating service?', 3: 'Cheated with our products?'}
-APP_PANEL_DESC = "Want to join the **Frontline** team? Click **Apply** below and I'll send you the application in your DMs.\n\n**Before you apply**\n• Your DMs must be open\n• Be honest. We check everything\n• Be active, professional and mature\n\n**How it works**\n1️⃣ Click **Apply**\n2️⃣ Answer the questions in your DMs\n3️⃣ Our team reviews it and DMs you the result"
-VERIFY_DESC = 'Welcome to **Frontline**! 👋\n\nClick the button below to verify yourself and unlock the rest of the server.'
+APP_PANEL_DESC = "Want to join the **Frontline Cheats X DemoWare** team? Click **Apply** below and I'll send you the application in your DMs.\n\n**Before you apply**\n• Your DMs must be open\n• Be honest. We check everything\n• Be active, professional and mature\n\n**How it works**\n1️⃣ Click **Apply**\n2️⃣ Answer the questions in your DMs\n3️⃣ Our team reviews it and DMs you the result"
+VERIFY_DESC = 'Welcome to **Frontline Cheats X DemoWare**! 👋\n\nClick the button below to verify yourself and unlock the rest of the server.'
 BOOSTER_DISCOUNT = '20%'
 BOOSTER_PERKS = [f'💸 **{BOOSTER_DISCOUNT} off all orders**', '⚡ **Priority support** in your tickets', '🎨 An exclusive **Booster** role', '🎁 **Early access** to new products and restocks', '🎉 Access to **booster-only giveaways**']
 
@@ -1601,7 +1730,7 @@ class StaffApps(commands.GroupCog, name='staffapps'):
         e = Embed(title='📝 Staff Applications', description=APP_PANEL_DESC, color=APP_COLOR)
         if interaction.guild.icon:
             e.set_thumbnail(url=interaction.guild.icon.url)
-        e.set_footer(text='Frontline • Staff Team')
+        e.set_footer(text=f'{BUSINESS_NAME} • Staff Team')
         await interaction.channel.send(embed=e, view=ApplyView())
         note = '' if self.cfg()['channel'] else "\n⚠️ You haven't chosen a review channel yet. Run `/staffapps setup`."
         await interaction.response.send_message('Panel posted.' + note, ephemeral=True)
@@ -1642,7 +1771,7 @@ class StaffApps(commands.GroupCog, name='staffapps'):
                 return await interaction.response.send_message('Your application was already accepted. 🎉', ephemeral=True)
             if app['status'] == 'denied' and time.time() - app['ts'] < APP_COOLDOWN:
                 return await interaction.response.send_message(f"You can apply again <t:{int(app['ts'] + APP_COOLDOWN)}:R>.", ephemeral=True)
-        intro = Embed(title='📝 Frontline Staff Application', description=f"Thanks for applying! There are **{len(APP_QUESTIONS)} questions**.\n\n• Reply to each question **in this chat**\n• Max **1000 characters** per answer\n• You have 15 minutes per question\n• Type `cancel` at any time to stop\n\nBe honest. We verify everything. Let's begin!", color=APP_COLOR)
+        intro = Embed(title=f'📝 {BUSINESS_NAME} Staff Application', description=f"Thanks for applying! There are **{len(APP_QUESTIONS)} questions**.\n\n• Reply to each question **in this chat**\n• Max **1000 characters** per answer\n• You have 15 minutes per question\n• Type `cancel` at any time to stop\n\nBe honest. We verify everything. Let's begin!", color=APP_COLOR)
         try:
             await user.send(embed=intro)
         except discord.HTTPException:
@@ -2029,7 +2158,7 @@ class TicketAI(commands.GroupCog, name='ai'):
             return
         del c['learned'][:-60]
         self.bot.save_data()
-        log = self.bot.get_channel(LOG_CHANNEL_ID)
+        log = log_channel(guild)
         if log:
             try:
                 await log.send(embed=Embed(title='🧠 AI learned from a ticket', description='\n'.join(('• ' + a for a in added)) + '\n\nWrong? Use `/ai learned` then `/ai forget`.', color=discord.Color.purple()))
@@ -2170,7 +2299,7 @@ class TicketAI(commands.GroupCog, name='ai'):
                 await ch.send(reply, allowed_mentions=discord.AllowedMentions.none())
             if escalate and ch.id not in self.escalated:
                 self.escalated.add(ch.id)
-                await ch.send(f'<@&{STAFF_ROLE_ID}> a customer needs a human here.', allowed_mentions=discord.AllowedMentions(roles=True))
+                await ch.send(f"{(staff_role(ch.guild).mention if staff_role(ch.guild) else '')} a customer needs a human here.", allowed_mentions=discord.AllowedMentions(roles=True))
 import ipaddress, sys, difflib
 try:
     import resource
@@ -2583,7 +2712,7 @@ class Tools(commands.Cog):
         e.add_field(name='Data file', value=f"{('✅ writable' if os.access(folder, os.W_OK) else '❌ not writable')}\n`{DATA_FILE}`" + (f' ({os.path.getsize(DATA_FILE) // 1024} KB)' if os.path.exists(DATA_FILE) else ''))
         e.add_field(name='Intents', value=f"Message content: {('✅' if b.intents.message_content else '❌')}\nMembers: {('✅' if b.intents.members else '❌')}")
         e.add_field(name='Ticket AI', value=('✅ on' if ai and ai.cfg()['enabled'] else '❌ off') + f"\nKey: {('✅' if GROQ_KEY else '❌')}\nModel: {(ai.model if ai and ai.model else 'not used yet')}")
-        sr = g.get_role(STAFF_ROLE_ID)
+        sr = staff_role(g)
         e.add_field(name='Staff role', value=f"{sr.mention}: Manage Messages {('✅' if sr.permissions.manage_messages else '❌ (staff commands are hidden from them. Give it, or set HIDE_STAFF_COMMANDS=0)')}" if sr else '❌ not found', inline=False)
         e.add_field(name='My permissions', value='\n'.join((f"{('✅' if ok else '❌')} {n}" for n, ok in need)), inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True)
@@ -2693,7 +2822,7 @@ class Tools(commands.Cog):
         self.bot.data['faq'] = {'channel': channel.id, 'message': msg.id}
         self.bot.save_data()
         await interaction.followup.send(f'✅ FAQ posted in {channel.mention}. It refreshes whenever you change the AI info with `/ai setinfo`.', ephemeral=True)
-PRODUCTS = [('Rebooted.lol', [('Rebooted.lol 1 Month Key', '$20.00'), ('Rebooted.lol 2 Month Key', '$25.00'), ('Rebooted.lol Year Key', '$35.00'), ('Rebooted.lol Spoofer 3 Month Key', '$30.00'), ('Rebooted HWID Temp Spoofer Day Key', '$5.99')]), ('Spoofers', [('Temp Spoofer', '$25.00'), ('Perm Spoofer', '$20.00'), ('Retrac Temp-Spoofer', '$25.00'), ('FiveM Temp Spoofer', '$40.00')]), ('Rainbow Six Siege', [('Rainbow Six Siege External Lifetime', '$35.00'), ('R6 Unlock All Tool', '$6.99'), ('R6 Ai Aimbot Lifetime', '$10.00')]), ('Fortnite', [('Fortnite Internal', '$39.99'), ('Crisis Fortnite External', '$19.99')]), ('Rob Run', [('Rob Run Day Key', '$5.00')]), ('Other', [('Steam, Discord, Epic Games Generator', '$34.99')])]
+PRODUCTS = [('Rebooted.lol', [('Rebooted.lol 1 Month Key', '$20.00'), ('Rebooted.lol 2 Month Key', '$25.00'), ('Rebooted.lol Year Key', '$35.00'), ('Rebooted.lol Spoofer 3 Month Key', '$30.00'), ('Rebooted HWID Temp Spoofer Day Key', '$5.99')]), ('Spoofers', [('Temp Spoofer', '$25.00'), ('Perm Spoofer', '$20.00'), ('Retrac Temp-Spoofer', '$25.00'), ('FiveM Temp Spoofer', '$40.00')]), ('Rainbow Six Siege', [('Rainbow Six Siege External Lifetime', '$35.00'), ('R6 Unlock All Tool', '$6.99'), ('R6 AI Aimbot + Recoil Scripts + Triggerbot', '$10.00'), ('TOVZWARE Recoil + Spread (R6)', '$7.99')]), ('Fortnite', [('Fortnite Internal', '$39.99'), ('Crisis Fortnite External', '$19.99')]), ('Rob Run', [('Rob Run Day Key', '$5.00'), ('Nova Rob Run Private', '$19.99')]), ('Other', [('Steam, Discord, Epic Games Generator', '$34.99')])]
 PAYMENTS_ACCEPTED = ['Cash App', 'Zelle', 'PayPal', 'Venmo']
 REFUND_POLICY = ["Refunds are only issued if the product doesn't work.", 'Exchanges are available upon request.']
 
@@ -3155,7 +3284,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'keycheck', 'close', 'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'stafftos': 'administrator', 'sentkeys': 'administrator', 'activekeys': 'manage_messages', 'keygen': 'manage_messages', 'hwidreset': 'manage_messages', 'bindkey': 'manage_messages', 'revoke': 'manage_messages', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixchannels': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'tools': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
+PERM_BY_CMD = {'stafftos': 'administrator', 'sentkeys': 'administrator', 'serverconfig': 'administrator', 'activekeys': 'manage_messages', 'keygen': 'manage_messages', 'hwidreset': 'manage_messages', 'bindkey': 'manage_messages', 'revoke': 'manage_messages', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixchannels': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'tools': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -3344,10 +3473,10 @@ class ScamGuard(commands.GroupCog, name='scamguard'):
         except discord.HTTPException:
             pass
         detail = f"{', '.join(why)} in {ch.mention}{extra}\n> {message.content[:300]}"
-        if MOD_LOG_CHANNEL_ID:
+        if mod_log_channel(message.guild):
             await self.bot.mod_log(message.guild, '🚨 Scam guard', message.guild.me, m, detail, discord.Color.red())
         else:
-            log = self.bot.get_channel(LOG_CHANNEL_ID)
+            log = log_channel(message.guild)
             if log:
                 try:
                     await log.send(embed=Embed(title='🚨 Scam guard', description=f'{m.mention}: {detail}', color=discord.Color.red()))
@@ -3367,12 +3496,13 @@ async def partnership(interaction: discord.Interaction, channel: Optional[discor
     e.add_field(name='🛒 What we offer', value='• Rebooted.lol keys, spoofers (temp & perm), Rainbow Six Siege and Fortnite tools, and more\n• Payments: ' + ', '.join(PAYMENTS_ACCEPTED) + "\n• Refunds if the product doesn't work, and exchanges on request\n• Fast ticket support, giveaways and a vouch system\n• Referral program and creator program", inline=False)
     e.add_field(name="🤝 What we're looking for", value='• An active server with real members\n• A partnership channel where we can post our ad\n• We post yours in return', inline=False)
     e.add_field(name='📩 Want to partner?', value='Open a ticket in our server and choose **General Support**, or DM a staff member.', inline=False)
-    e.add_field(name='🔗 Invite', value=INVITE_URL, inline=False)
+    e.add_field(name='🔗 Invites', value=f'{INVITE_URL}\nhttps://discord.gg/demoware', inline=False)
     if interaction.guild.icon:
         e.set_thumbnail(url=interaction.guild.icon.url)
     e.set_footer(text=f'{BUSINESS_NAME} • Partnerships')
     view = discord.ui.View()
-    view.add_item(discord.ui.Button(label='Join Frontline', style=discord.ButtonStyle.link, url=INVITE_URL, emoji='🔥'))
+    view.add_item(discord.ui.Button(label='Join Frontline Cheats', style=discord.ButtonStyle.link, url=INVITE_URL, emoji='🔥'))
+    view.add_item(discord.ui.Button(label='Join DemoWare', style=discord.ButtonStyle.link, url='https://discord.gg/demoware', emoji='🔥'))
     try:
         await ch.send(embed=e, view=view)
     except discord.HTTPException:
@@ -3919,7 +4049,7 @@ class Blacklist(commands.GroupCog, name='blacklist'):
         return self.bot.data.setdefault('blacklist_mode', 'alert')
 
     async def alert(self, guild, text):
-        log = self.bot.get_channel(MOD_LOG_CHANNEL_ID or LOG_CHANNEL_ID)
+        log = mod_log_channel(guild) or log_channel(guild)
         if log:
             try:
                 await log.send(embed=Embed(title='⛔ Blacklist', description=text, color=discord.Color.red()))
@@ -4219,11 +4349,16 @@ class TicketTools(commands.Cog):
 
     @tasks.loop(minutes=10)
     async def sweep(self):
+        for g in list(self.bot.guilds):
+            with in_guild(g.id):
+                await self.sweep_one(g)
+
+    async def sweep_one(self, guild):
         c = self.acfg()
         if not c['enabled']:
             return
         now = discord.utils.utcnow()
-        for guild in self.bot.guilds:
+        if True:
             for ch in guild.text_channels:
                 if not is_ticket(ch):
                     continue
@@ -4281,10 +4416,10 @@ async def restore_from_backup():
     restored = json.loads((await att.read()).decode('utf-8'))
     if not isinstance(restored, dict):
         raise ValueError('backup is not a settings file')
-    data.clear()
-    data.update(restored)
+    ROOT.clear()
+    ROOT.update(restored)
     for k, v in DEFAULTS.items():
-        data.setdefault(k, copy.deepcopy(v))
+        ROOT.setdefault(k, copy.deepcopy(v))
     save_data()
     backup_state.update(dirty=False, msg_id=msg.id)
     return True
@@ -4294,7 +4429,7 @@ async def upload_backup():
     if ch is None:
         backup_state['error'] = 'backup channel not found'
         return False
-    raw = json.dumps(data, indent=1).encode('utf-8')
+    raw = json.dumps(ROOT, indent=1).encode('utf-8')
     if len(raw) > 7000000:
         backup_state['error'] = 'settings file is too big to back up'
         return False
@@ -4419,7 +4554,7 @@ class KeyModal(discord.ui.Modal, title='Send a key'):
         k['list'].append(entry)
         save_data()
         await interaction.response.send_message(f"✅ Sent **{self.product}** key to {self.member.mention} (record #{entry['id']}).", ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
-        log = bot.get_channel(LOG_CHANNEL_ID)
+        log = log_channel(interaction.guild)
         if log:
             try:
                 await log.send(embed=Embed(title='🔑 Key delivered', description=f"**{self.product}** → {self.member.mention} (`{self.member.id}`)\nSent by {self.sender.mention} · record #{entry['id']}", color=discord.Color.green()), allowed_mentions=discord.AllowedMentions.none())
@@ -4579,7 +4714,7 @@ async def post_transcript(guild, channel, text, note=''):
         except (discord.HTTPException, AttributeError):
             pass
         return
-    log = bot.get_channel(LOG_CHANNEL_ID)
+    log = log_channel(guild)
     if log:
         try:
             await log.send(label, file=transcript_file(text, channel.name))
@@ -4631,7 +4766,7 @@ class ActivityCheck(commands.Cog):
     async def post(self, guild):
         """Posts a new activity check. Returns (ok, text)."""
         c = self.cfg()
-        ch, role = (self.find_channel(guild), guild.get_role(STAFF_ROLE_ID))
+        ch, role = (self.find_channel(guild), staff_role(guild))
         if ch is None:
             return (False, 'I couldn\'t find a channel called "Staff Activity Check". Run `/staffactivitycheck setup` and pick the channel.')
         if role is None:
@@ -4681,7 +4816,7 @@ class ActivityCheck(commands.Cog):
                         reacted.add(u.id)
         except discord.HTTPException:
             readable, msg = (False, None)
-        role = guild.get_role(STAFF_ROLE_ID)
+        role = staff_role(guild)
         missed, passed = ([], 0)
         if readable:
             for uid in active['staff']:
@@ -4734,6 +4869,11 @@ class ActivityCheck(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def tick(self):
+        for g in list(self.bot.guilds):
+            with in_guild(g.id):
+                await self.tick_one()
+
+    async def tick_one(self):
         c = self.cfg()
         guild = self.bot.get_guild(c['guild']) if c['guild'] else None
         if guild is None:
@@ -4816,9 +4956,31 @@ class ActivityCheck(commands.Cog):
 import secrets
 from datetime import date
 KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+@bot.tree.command(name='serverconfig', description="Set this server's staff role and log channels (admin)")
+@app_commands.describe(staffrole='The role that counts as staff here', logchannel='Where logs, transcripts and key deliveries go', modlogchannel='Where moderation logs go (optional)')
+@app_commands.checks.has_permissions(administrator=True)
+async def serverconfig(interaction: discord.Interaction, staffrole: Optional[discord.Role]=None, logchannel: Optional[discord.TextChannel]=None, modlogchannel: Optional[discord.TextChannel]=None):
+    g = interaction.guild
+    c = gcfg(g)
+    if staffrole:
+        c['staff_role'] = staffrole.id
+    if logchannel:
+        c['log_channel'] = logchannel.id
+    if modlogchannel:
+        c['modlog_channel'] = modlogchannel.id
+    if staffrole or logchannel or modlogchannel:
+        save_data()
+    sr, lc, mc = (staff_role(g), log_channel(g), mod_log_channel(g))
+    e = Embed(title=f'⚙️ Settings for {g.name}', color=discord.Color.blurple())
+    e.add_field(name='🛡️ Staff role', value=sr.mention if sr else '❌ not set. Use `staffrole`', inline=False)
+    e.add_field(name='📜 Log channel', value=lc.mention if lc else '❌ not set. Use `logchannel`', inline=False)
+    e.add_field(name='🔨 Mod log channel', value=mc.mention if mc else 'not set (optional)', inline=False)
+    e.set_footer(text='Every server has its own settings, products status, giveaways, filters and so on.')
+    await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 KEY_SECRET = 'FrontlineCheats2026KeyAuth-v1'
-KEY_PRODUCT = 'Frontline Cheats'
-KEY_FOOTER = 'Frontline Cheats • .gg/frontlinecheats'
+KEY_PRODUCT = 'Frontline Cheats X DemoWare'
+KEY_FOOTER = f'{BUSINESS_NAME} • {INVITE_FOOTER}'
 KEY_COLOR = 6087167
 KEY_ROLE_NAMES = {'owner', 'admin', 'staff', 'key manager'}
 KEY_EPOCH = date(2026, 1, 1)
