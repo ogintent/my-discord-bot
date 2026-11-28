@@ -94,6 +94,7 @@ class MyBot(commands.Bot):
         await self.add_cog(TicketTools(self))
         await self.add_cog(DataBackup(self))
         await self.add_cog(ActivityCheck(self))
+        await self.add_cog(KeyAuthServer(self))
         apply_visibility(self.tree)
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
@@ -773,7 +774,7 @@ async def help_cmd(interaction: discord.Interaction):
     e.add_field(name='🎉 Community', value='/giveaway · /staffapps · /verifypanel · /boosterpanel · /discount · /ai (ticket AI)', inline=False)
     e.add_field(name='🛒 Shop', value='/products · /calc · /recommend · /afk · /discount · /vouch · /suggest', inline=False)
     e.add_field(name='🎟️ Ticket Tools', value='/claim · /unclaim · /transfer · /rename · /priority · /autoclose (staff)', inline=False)
-    e.add_field(name='💼 Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /dmkey · /activekeys (owner) · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
+    e.add_field(name='💼 Shop Admin', value='/status (everyone) · /setstatus · /statusboard · /dmkey · /sentkeys (owner) · /keygen · /activekeys · /hwidreset · /bindkey · /revoke · /keycheck · /blacklist · /backup · /restore · /savedata (staff)', inline=False)
     e.add_field(name='⚙️ Server Tools', value='/scamguard · /mediapanel · /staffactivitycheck · /stafftos · /partnership · /fixchannels · /fixroles · /welcome · /announce · /sticky · /suggestchannel · /staffstats (staff)', inline=False)
     e.add_field(name='💬 Info & Fun', value='/ping · /tos · /serverinfo · /userinfo · /avatar · /poll · /8ball · /coinflip · /roll', inline=False)
     await interaction.response.send_message(embed=e)
@@ -3153,7 +3154,7 @@ async def mediapanel(interaction: discord.Interaction):
     await interaction.response.send_message('Media panel posted.', ephemeral=True)
 from decimal import Decimal, ROUND_HALF_UP
 PUBLIC_CMDS = {'keycheck', 'close', 'vouch', 'vouchstats', 'website', 'help', 'ping', 'serverinfo', 'userinfo', 'avatar', 'poll', '8ball', 'coinflip', 'roll', 'products', 'status', 'tos', 'afk', 'suggest', 'calc', 'recommend'}
-PERM_BY_CMD = {'stafftos': 'administrator', 'activekeys': 'administrator', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
+PERM_BY_CMD = {'stafftos': 'administrator', 'sentkeys': 'administrator', 'activekeys': 'manage_messages', 'keygen': 'manage_messages', 'hwidreset': 'manage_messages', 'bindkey': 'manage_messages', 'revoke': 'manage_messages', 'removekey': 'administrator', 'savedata': 'administrator', 'backup': 'administrator', 'restore': 'administrator', 'statusboard': 'administrator', 'blacklist': 'ban_members', 'fixroles': 'administrator', 'fixroles-undo': 'administrator', 'fixchannels': 'administrator', 'fixchannels-undo': 'administrator', 'partnership': 'manage_messages', 'ticketpanel': 'administrator', 'purgetickets': 'administrator', 'setwebsite': 'administrator', 'setimage': 'administrator', 'mediapanel': 'administrator', 'verifypanel': 'administrator', 'boosterpanel': 'administrator', 'bothealth': 'administrator', 'steal': 'administrator', 'ref-embed': 'administrator', 'ai-knowledge': 'administrator', 'faq-setup': 'administrator', 'antinuke': 'administrator', 'kick': 'kick_members', 'ban': 'ban_members', 'idban': 'ban_members', 'softban': 'ban_members', 'unban': 'ban_members', 'timeout': 'moderate_members', 'untimeout': 'moderate_members', 'warn': 'moderate_members', 'warnings': 'moderate_members', 'delwarn': 'moderate_members', 'clearwarnings': 'moderate_members', 'nick': 'manage_nicknames', 'addrole': 'manage_roles', 'removerole': 'manage_roles', 'purge': 'manage_messages', 'slowmode': 'manage_channels', 'lock': 'manage_channels', 'unlock': 'manage_channels', 'embed': 'manage_guild', 'antispam': 'manage_guild', 'staffapps': 'manage_guild', 'staffactivitycheck': 'manage_guild'}
 
 def apply_visibility(tree):
     """Members only see the commands they are allowed to use. Staff commands default to Manage Messages."""
@@ -4464,11 +4465,11 @@ class KeysView(discord.ui.View):
     async def next(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(embed=KeysView(self.owner_id, self.entries, self.page + 1).embed(), view=KeysView(self.owner_id, self.entries, self.page + 1))
 
-@bot.tree.command(name='activekeys', description='List every key sent with /dmkey and its product (server owner only)')
+@bot.tree.command(name='sentkeys', description='List every product key sent with /dmkey (server owner only)')
 @app_commands.describe(product='Only show one product (optional)', user='Only show keys sent to one person (optional)')
 @app_commands.autocomplete(product=product_autocomplete)
 @owner_only()
-async def activekeys(interaction: discord.Interaction, product: Optional[str]=None, user: Optional[discord.User]=None):
+async def sentkeys(interaction: discord.Interaction, product: Optional[str]=None, user: Optional[discord.User]=None):
     entries = list(reversed(key_table()['list']))
     if product:
         hit = find_product(product)
@@ -4481,7 +4482,7 @@ async def activekeys(interaction: discord.Interaction, product: Optional[str]=No
     await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 @bot.tree.command(name='removekey', description='Delete a key record by its number (server owner only)')
-@app_commands.describe(number='The # shown in /activekeys')
+@app_commands.describe(number='The # shown in /sentkeys')
 @owner_only()
 async def removekey(interaction: discord.Interaction, number: int):
     k = key_table()
@@ -4816,15 +4817,21 @@ class ActivityCheck(commands.Cog):
         e.add_field(name='Server Members Intent', value='✅ on' if self.bot.intents.members else '❌ off (set MEMBERS_INTENT=1 so every staff member is tracked)', inline=False)
         await interaction.response.send_message(embed=e, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 import secrets
+from datetime import date
 KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 KEY_SECRET = 'FrontlineCheats2026KeyAuth-v1'
 KEY_PRODUCT = 'Frontline Cheats'
 KEY_FOOTER = 'Frontline Cheats • .gg/frontlinecheats'
+KEY_COLOR = 6087167
 KEY_ROLE_NAMES = {'owner', 'admin', 'staff', 'key manager'}
+KEY_EPOCH = date(2026, 1, 1)
+KEY_LIFETIME = 'ZZZZ'
+HWID_RE = re.compile('^[0-9A-F]{32}$')
+HWID_RESET_NOTE = 'HWID cleared. User must delete flc_binds.json next to Frontline Cheats.exe if it exists, then re-auth.'
 
 def key_checksum(body12):
     n = 0
-    mixed = body12 + KEY_SECRET
+    mixed = body12.upper() + KEY_SECRET
     for i, c in enumerate(mixed):
         n = n * 33 + ord(c) * (i + 1) & 4294967295
     out = ''
@@ -4833,14 +4840,73 @@ def key_checksum(body12):
         n = n * 1103515245 + 12345 & 4294967295
     return out
 
-def generate_key():
-    body = ''.join((secrets.choice(KEY_ALPHABET) for _ in range(12)))
-    full = body + key_checksum(body)
-    return '-'.join((full[i:i + 4] for i in range(0, 16, 4)))
+def utc_today():
+    return discord.utils.utcnow().date()
+
+def expiry_code(days):
+    """days <= 0 -> lifetime (ZZZZ). Otherwise 4 base-32 chars (ALPHABET index, most significant first) = days since 2026-01-01 UTC of the LAST valid day."""
+    if days <= 0:
+        return (KEY_LIFETIME, None)
+    exp = utc_today() + timedelta(days=days)
+    n = (exp - KEY_EPOCH).days
+    if not 0 <= n < 32 ** 4:
+        raise ValueError('expiry out of range')
+    chars = []
+    for _ in range(4):
+        chars.append(KEY_ALPHABET[n % 32])
+        n //= 32
+    return (''.join(reversed(chars)), exp)
+
+def decode_expiry(code):
+    if code == KEY_LIFETIME:
+        return None
+    n = 0
+    for c in code:
+        n = n * 32 + KEY_ALPHABET.index(c)
+    return KEY_EPOCH + timedelta(days=n)
+
+def fmt_key(k16):
+    return '-'.join((k16[i:i + 4] for i in range(0, 16, 4)))
+
+def make_key(days):
+    """Returns (key, expiry_date_or_None)."""
+    code, exp = expiry_code(days)
+    body = ''.join((secrets.choice(KEY_ALPHABET) for _ in range(8))) + code
+    return (fmt_key(body + key_checksum(body)), exp)
+
+def clean_key(key):
+    return re.sub('[^A-Za-z0-9]', '', key or '').upper()
+
+def norm_key(key):
+    k = clean_key(key)
+    return fmt_key(k) if len(k) == 16 else None
 
 def validate_key(key):
-    k = re.sub('[^A-Za-z0-9]', '', key or '').upper()
-    return len(k) == 16 and k[12:] == key_checksum(k[:12])
+    """Returns (ok, reason, expiry_date_or_None). reason in: ok, format, checksum, expired."""
+    k = clean_key(key)
+    if len(k) != 16 or any((c not in KEY_ALPHABET for c in k)):
+        return (False, 'format', None)
+    if k[12:] != key_checksum(k[:12]):
+        return (False, 'checksum', None)
+    exp = decode_expiry(k[8:12])
+    if exp is not None and utc_today() > exp:
+        return (False, 'expired', exp)
+    return (True, 'ok', exp)
+
+def keydb():
+    return data.setdefault('license_keys', {})
+
+def rec_expired(rec):
+    return bool(rec.get('expires')) and utc_today() > date.fromisoformat(rec['expires'])
+
+def exp_text(rec_or_date):
+    exp = rec_or_date
+    if isinstance(rec_or_date, dict):
+        exp = rec_or_date.get('expires')
+    if not exp:
+        return 'Lifetime'
+    d = exp if isinstance(exp, date) else date.fromisoformat(exp)
+    return d.isoformat()
 
 def can_keygen(member):
     if not isinstance(member, discord.Member):
@@ -4849,39 +4915,256 @@ def can_keygen(member):
         return True
     return any((role_base(r.name) in KEY_ROLE_NAMES for r in member.roles))
 
-def keygen_embed(keys, note=None):
-    e = discord.Embed(title=f'🔑 {KEY_PRODUCT} License Keys', description='\n'.join((f'`{k}`' for k in keys)), color=6086143, timestamp=discord.utils.utcnow())
+def create_keys(days, amount, note, creator_id):
+    db = keydb()
+    made = []
+    for _ in range(amount):
+        for _try in range(20):
+            key, exp = make_key(days)
+            if key not in db:
+                break
+        ok, reason, _e = validate_key(key)
+        assert ok, f'self-test failed for {key}: {reason}'
+        db[key] = {'created_at': discord.utils.utcnow().isoformat(), 'days': max(0, days), 'expires': exp.isoformat() if exp else None, 'note': note or '', 'created_by': str(creator_id), 'hwid': None, 'status': 'active'}
+        made.append((key, exp))
+    save_data()
+    return made
+
+def keygen_embed(made, days, note=None):
+    e = discord.Embed(title=f'🔑 {KEY_PRODUCT} License Keys', description='\n'.join((f"`{k}` · {('Lifetime' if exp is None else 'until ' + exp.isoformat())}" for k, exp in made)), color=KEY_COLOR, timestamp=discord.utils.utcnow())
+    e.add_field(name='⏳ Duration', value='Lifetime' if days <= 0 else f'{days} day(s)', inline=True)
+    e.add_field(name='🔢 Amount', value=str(len(made)), inline=True)
     if note:
         e.add_field(name='📝 Note', value=note[:500], inline=False)
     e.set_footer(text=KEY_FOOTER)
     return e
 
+def key_embed(title, text, color=KEY_COLOR):
+    e = discord.Embed(title=title, description=text, color=color)
+    e.set_footer(text=KEY_FOOTER)
+    return e
+
+async def deny(interaction):
+    await interaction.response.send_message('You are not allowed to use key commands.', ephemeral=True)
+
 @bot.tree.command(name='keygen', description='Generate signed license keys (admin)')
-@app_commands.describe(amount='How many keys (1-25)', note='Optional note', public='Show the keys to everyone in the channel (default: only you)')
-async def keygen_cmd(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 25]=1, note: Optional[str]=None, public: bool=False):
+@app_commands.describe(days='Days the key lasts (0 = lifetime)', amount='How many keys (1-25)', note='Optional note', public='Show the keys to everyone in the channel (default: only you)')
+async def keygen_cmd(interaction: discord.Interaction, days: app_commands.Range[int, 0, 3650]=0, amount: app_commands.Range[int, 1, 25]=1, note: Optional[str]=None, public: bool=False):
     if not can_keygen(interaction.user):
-        return await interaction.response.send_message('You are not allowed to generate keys.', ephemeral=True)
-    keys = [generate_key() for _ in range(amount)]
-    assert all((validate_key(k) for k in keys))
-    await interaction.response.send_message(embed=keygen_embed(keys, note), ephemeral=not public)
+        return await deny(interaction)
+    made = create_keys(days, amount, note, interaction.user.id)
+    await interaction.response.send_message(embed=keygen_embed(made, days, note), ephemeral=not public)
+
+@bot.command(name='keygen')
+async def keygen_prefix(ctx, days: int=0, amount: int=1):
+    if not can_keygen(ctx.author):
+        return await ctx.reply('You are not allowed to generate keys.', mention_author=False)
+    days = max(0, min(3650, days))
+    amount = max(1, min(25, amount))
+    await ctx.reply(embed=keygen_embed(create_keys(days, amount, '', ctx.author.id), days), mention_author=False)
 
 @bot.tree.command(name='keycheck', description='Check whether a license key is valid')
 @app_commands.describe(key='The key, like XXXX-XXXX-XXXX-XXXX')
 async def keycheck_cmd(interaction: discord.Interaction, key: str):
-    ok = validate_key(key)
-    e = discord.Embed(title=f'✅ Valid {KEY_PRODUCT} key' if ok else f'❌ Invalid {KEY_PRODUCT} key', description='This key is correctly signed.' if ok else "This key isn't valid. Check for typos.", color=discord.Color.green() if ok else discord.Color.red())
-    e.set_footer(text=KEY_FOOTER)
+    ok, reason, exp = validate_key(key)
+    nk = norm_key(key)
+    rec = keydb().get(nk) if nk else None
+    admin = can_keygen(interaction.user)
+    if rec is not None and rec.get('status') == 'revoked':
+        ok, reason = (False, 'revoked')
+    if ok:
+        e = key_embed(f'✅ Valid {KEY_PRODUCT} key', 'This key is correctly signed and has not expired.', discord.Color.green())
+    else:
+        why = {'format': "That isn't a 16-character key.", 'checksum': "This key isn't valid. Check for typos.", 'expired': 'This key has expired.', 'revoked': 'This key has been revoked.'}.get(reason, 'Invalid key.')
+        e = key_embed(f'❌ Invalid {KEY_PRODUCT} key', why, discord.Color.red())
+    if reason in ('ok', 'expired', 'revoked') and nk:
+        e.add_field(name='⏳ Expires', value=exp_text(exp) if exp else 'Lifetime', inline=True)
+    if admin and rec is not None:
+        e.add_field(name='🖥️ HWID', value=f"`{rec['hwid']}`" if rec.get('hwid') else 'unbound', inline=False)
+        e.add_field(name='📌 Status', value=rec.get('status', 'active'), inline=True)
+        if rec.get('note'):
+            e.add_field(name='📝 Note', value=rec['note'][:300], inline=False)
+    elif admin and reason in ('ok', 'expired'):
+        e.add_field(name='📌 Database', value='Not in the key database (made before the database existed).', inline=False)
     await interaction.response.send_message(embed=e, ephemeral=True)
+KEYS_PER_PAGE = 10
 
-@bot.command(name='keygen')
-async def keygen_prefix(ctx, amount: int=1):
-    if not can_keygen(ctx.author):
-        return await ctx.reply('You are not allowed to generate keys.', mention_author=False)
-    amount = max(1, min(25, amount))
-    keys = [generate_key() for _ in range(amount)]
-    assert all((validate_key(k) for k in keys))
-    await ctx.reply(embed=keygen_embed(keys), mention_author=False)
-for _ in range(500):
-    assert validate_key(generate_key())
-assert not validate_key('AAAA-BBBB-CCCC-DDDD')
+def active_entries():
+    items = [(k, r) for k, r in keydb().items() if r.get('status') == 'active' and (not rec_expired(r))]
+    items.sort(key=lambda kv: kv[1].get('created_at', ''), reverse=True)
+    return items
+
+class ActiveKeysView(discord.ui.View):
+
+    def __init__(self, owner_id, page=0):
+        super().__init__(timeout=600)
+        self.owner_id = owner_id
+        self.entries = active_entries()
+        self.pages = max(1, -(-len(self.entries) // KEYS_PER_PAGE))
+        self.page = max(0, min(page, self.pages - 1))
+        chunk = self.entries[self.page * KEYS_PER_PAGE:(self.page + 1) * KEYS_PER_PAGE]
+        self.prev_btn.disabled = self.page == 0
+        self.next_btn.disabled = self.page >= self.pages - 1
+        bound = [(k, r) for k, r in chunk if r.get('hwid')]
+        if bound:
+            self.sel.options = [discord.SelectOption(label=k, value=k, description=f"HWID {r['hwid'][:12]}…") for k, r in bound]
+        else:
+            self.remove_item(self.sel)
+
+    def embed(self):
+        chunk = self.entries[self.page * KEYS_PER_PAGE:(self.page + 1) * KEYS_PER_PAGE]
+        lines = [f"`{k}` | {exp_text(r)} | {(r['hwid'] if r.get('hwid') else 'unbound')} | {(r.get('note') or '-')[:40]}" for k, r in chunk]
+        e = discord.Embed(title=f'🔑 Active keys ({len(self.entries)})', description='\n'.join(lines) or 'No active keys.', color=KEY_COLOR)
+        e.set_footer(text=f'Page {self.page + 1}/{self.pages} • key | expiry | HWID | note • {KEY_FOOTER}')
+        return e
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id or not can_keygen(interaction.user):
+            await interaction.response.send_message('This menu belongs to someone else.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.select(placeholder='Reset HWID for…', min_values=1, max_values=1, options=[discord.SelectOption(label='-', value='-')])
+    async def sel(self, interaction: discord.Interaction, select: discord.ui.Select):
+        rec = keydb().get(select.values[0])
+        if rec is not None:
+            rec['hwid'] = None
+            save_data()
+        view = ActiveKeysView(self.owner_id, self.page)
+        await interaction.response.edit_message(embed=view.embed(), view=view)
+        await interaction.followup.send(embed=key_embed('🖥️ HWID reset', f'`{select.values[0]}`\n{HWID_RESET_NOTE}'), ephemeral=True)
+
+    @discord.ui.button(label='Prev', style=discord.ButtonStyle.secondary, emoji='◀️')
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = ActiveKeysView(self.owner_id, self.page - 1)
+        await interaction.response.edit_message(embed=view.embed(), view=view)
+
+    @discord.ui.button(label='Next', style=discord.ButtonStyle.secondary, emoji='▶️')
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        view = ActiveKeysView(self.owner_id, self.page + 1)
+        await interaction.response.edit_message(embed=view.embed(), view=view)
+
+@bot.tree.command(name='activekeys', description='List active license keys, expiry and HWID (admin)')
+async def activekeys(interaction: discord.Interaction):
+    if not can_keygen(interaction.user):
+        return await deny(interaction)
+    view = ActiveKeysView(interaction.user.id)
+    await interaction.response.send_message(embed=view.embed(), view=view, ephemeral=True)
+
+def find_rec(key):
+    nk = norm_key(key)
+    return (nk, keydb().get(nk) if nk else None)
+
+@bot.tree.command(name='hwidreset', description='Clear the HWID bound to a key (admin)')
+@app_commands.describe(key='The key, like XXXX-XXXX-XXXX-XXXX')
+async def hwidreset(interaction: discord.Interaction, key: str):
+    if not can_keygen(interaction.user):
+        return await deny(interaction)
+    nk, rec = find_rec(key)
+    if rec is None:
+        return await interaction.response.send_message('That key is not in the database.', ephemeral=True)
+    rec['hwid'] = None
+    save_data()
+    await interaction.response.send_message(embed=key_embed('🖥️ HWID reset', f'`{nk}`\n{HWID_RESET_NOTE}'), ephemeral=True)
+
+@bot.tree.command(name='bindkey', description='Bind a key to a hardware ID (admin)')
+@app_commands.describe(key='The key', hwid='32 hex characters', force='Overwrite if the key is already bound to a different HWID')
+async def bindkey(interaction: discord.Interaction, key: str, hwid: str, force: bool=False):
+    if not can_keygen(interaction.user):
+        return await deny(interaction)
+    nk, rec = find_rec(key)
+    if rec is None:
+        return await interaction.response.send_message('That key is not in the database.', ephemeral=True)
+    h = re.sub('\\s', '', hwid).upper()
+    if not HWID_RE.match(h):
+        return await interaction.response.send_message('HWID must be exactly 32 hex characters (0-9, A-F).', ephemeral=True)
+    if rec.get('hwid') and rec['hwid'] != h and (not force):
+        return await interaction.response.send_message(f"⚠️ That key is already bound to `{rec['hwid']}`. Use `force: True` to overwrite, or `/hwidreset` first.", ephemeral=True)
+    rec['hwid'] = h
+    save_data()
+    await interaction.response.send_message(embed=key_embed('🖥️ Key bound', f'`{nk}` → `{h}`'), ephemeral=True)
+
+@bot.tree.command(name='revoke', description='Revoke a license key (admin)')
+@app_commands.describe(key='The key to revoke')
+async def revoke(interaction: discord.Interaction, key: str):
+    if not can_keygen(interaction.user):
+        return await deny(interaction)
+    nk, rec = find_rec(key)
+    if rec is None:
+        return await interaction.response.send_message('That key is not in the database.', ephemeral=True)
+    rec['status'] = 'revoked'
+    save_data()
+    note = 'The online auth server will now reject it.' if os.getenv('AUTH_ENABLED') == '1' else 'Tracking only: the launcher keeps accepting it unless online auth is enabled.'
+    await interaction.response.send_message(embed=key_embed('⛔ Key revoked', f'`{nk}`\n{note}', discord.Color.red()), ephemeral=True)
+
+class KeyAuthServer(commands.Cog):
+    """Optional tiny HTTP endpoint so revoke and HWID binding are enforced online. Enable with AUTH_ENABLED=1 (uses the PORT variable, default 8080)."""
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.runner = None
+        self.hits = defaultdict(deque)
+
+    async def cog_load(self):
+        if os.getenv('AUTH_ENABLED') != '1':
+            return
+        from aiohttp import web
+        app = web.Application()
+        app.router.add_post('/auth', self.auth)
+        app.router.add_get('/health', self.health)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        port = int(os.getenv('PORT', '8080'))
+        await web.TCPSite(self.runner, '0.0.0.0', port).start()
+        print(f'[keyauth] listening on :{port}')
+
+    async def cog_unload(self):
+        if self.runner is not None:
+            await self.runner.cleanup()
+
+    async def health(self, request):
+        from aiohttp import web
+        return web.json_response({'ok': True})
+
+    def limited(self, request):
+        ip = request.headers.get('X-Forwarded-For', request.remote or '?').split(',')[0].strip()
+        q, now = (self.hits[ip], time.time())
+        while q and now - q[0] > 60:
+            q.popleft()
+        q.append(now)
+        return len(q) > 30
+
+    async def auth(self, request):
+        from aiohttp import web
+        if self.limited(request):
+            return web.json_response({'ok': False, 'reason': 'rate_limited'}, status=429)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({'ok': False, 'reason': 'bad_request'}, status=400)
+        key, hwid = (str(body.get('key', '')), re.sub('\\s', '', str(body.get('hwid', ''))).upper())
+        if not HWID_RE.match(hwid):
+            return web.json_response({'ok': False, 'reason': 'bad_hwid'}, status=400)
+        ok, reason, exp = validate_key(key)
+        if not ok:
+            return web.json_response({'ok': False, 'reason': reason}, status=403)
+        nk = norm_key(key)
+        rec = keydb().get(nk)
+        if rec is None:
+            return web.json_response({'ok': False, 'reason': 'unknown_key'}, status=403)
+        if rec.get('status') != 'active':
+            return web.json_response({'ok': False, 'reason': 'revoked'}, status=403)
+        if rec_expired(rec):
+            return web.json_response({'ok': False, 'reason': 'expired'}, status=403)
+        if not rec.get('hwid'):
+            rec['hwid'] = hwid
+            save_data()
+        elif rec['hwid'] != hwid:
+            return web.json_response({'ok': False, 'reason': 'hwid_mismatch'}, status=403)
+        return web.json_response({'ok': True, 'expires': rec.get('expires'), 'lifetime': not rec.get('expires')})
+for _d in (0, 1, 30, 365, 3650):
+    for _ in range(100):
+        _k, _e = make_key(_d)
+        assert validate_key(_k)[0], _k
+assert not validate_key('AAAA-BBBB-CCCC-DDDD')[0]
 bot.run(os.getenv('DISCORD_TOKEN'))
